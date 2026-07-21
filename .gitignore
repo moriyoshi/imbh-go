@@ -1,0 +1,11 @@
+# Rust build output (the combined staticlib is ~450 MB).
+/rust/target/
+/proto-cdata/rust/target/
+/.agents-workspace/
+
+# Go
+*.test
+
+# Vim
+*.swp
+*.swo

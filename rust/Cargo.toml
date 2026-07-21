@@ -1,0 +1,36 @@
+[package]
+name = "imbhgo"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "imbhgo"
+# One combined staticlib: sable's runtime + imbh + our handlers + the imbhgo_* / sable_* C ABI.
+crate-type = ["staticlib"]
+
+[dependencies]
+# sable as an rlib dependency (its crate is ["staticlib","rlib"] for exactly this). Gives us
+# register_stream/Payload and pulls its sable_* C ABI into the combined archive.
+sable = { git = "https://github.com/moriyoshi/sable", rev = "0c6fe56" }
+# imbh facade with the Arrow C Data Interface (cdata), protobuf query inputs (proto), full-text
+# search (search), and serde (for the opaque PageCursor round-trip). This is the heavy dependency
+# (the DataFusion tree). Consumed from crates.io (published 0.1.0); see also ../../imbh for local dev.
+imbh = { version = "0.1.0", features = ["cdata", "proto", "search", "serde"] }
+# imbh-core for the shared canonical-JSON encoder (`canonical_json_object`), used to render a
+# metric series' `Attributes` label set as its canonical string. MUST resolve to the SAME version as
+# imbh's own imbh-core dep (0.1.0) so the crate instance (and thus `imbh::Attributes` ==
+# `imbh_core::Attributes`) unifies — keep this pin in lockstep with the imbh version above.
+imbh-core = { version = "0.1.0" }
+# LGTM-stack query languages (PromQL / LogQL / TraceQL) executed against imbh::Db (the `source`
+# feature pulls the execution traits, which depend on the imbh facade). Same 0.1.0 as imbh so its
+# transitive imbh dep unifies with ours.
+imbh-lgtm = { version = "0.1.0", features = ["source"] }
+# StreamExt for driving imbh's SendableRecordBatchStream in the stream handler.
+futures = "0.3"
+# Native (JSON) typed-query decoding: Go marshals the query struct, Rust maps it onto imbh's builders.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 2

@@ -1,0 +1,201 @@
+# Build the prebuilt libimbhgo.a for every supported cell and attach them to the GitHub release, so
+# consumers can `go run .../cmd/imbhgo-fetch` and build the binding without a Rust toolchain.
+#
+# Trigger: pushing a version tag (v*). The tag name must match internal/release.Version.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.26.4" # must match go.mod's toolchain pin (//go:linkname into Go internals)
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }} ${{ matrix.libc }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64, libc: glibc, target: x86_64-unknown-linux-gnu,   runner: ubuntu-latest, cross_cc: "zig cc -target x86_64-linux-gnu",   strip: x86_64-linux-gnu-strip }
+          - { goos: linux,   goarch: arm64, libc: glibc, target: aarch64-unknown-linux-gnu,  runner: ubuntu-latest, cross_cc: "zig cc -target aarch64-linux-gnu",  strip: aarch64-linux-gnu-strip }
+          - { goos: linux,   goarch: amd64, libc: musl,  target: x86_64-unknown-linux-musl,  runner: ubuntu-latest, cross_cc: "zig cc -target x86_64-linux-musl",  strip: x86_64-linux-gnu-strip }
+          - { goos: linux,   goarch: arm64, libc: musl,  target: aarch64-unknown-linux-musl, runner: ubuntu-latest, cross_cc: "zig cc -target aarch64-linux-musl", strip: aarch64-linux-gnu-strip }
+          # macos-13 was retired 2025-12-04; macos-15-intel is the remaining x86_64 macOS label
+          # (available until ~2027-08, the last Intel image Actions will offer).
+          - { goos: darwin,  goarch: amd64, libc: "",    target: x86_64-apple-darwin,        runner: macos-15-intel, cross_cc: "",                                strip: strip }
+          - { goos: darwin,  goarch: arm64, libc: "",    target: aarch64-apple-darwin,       runner: macos-14,      cross_cc: "",                                 strip: strip }
+          # Windows stays best-effort, but the reason changed: sable support is no longer the gap. Upstream
+          # landed the fast crossing (its PR #7) and IOCP fd-fusion (#10) and tests the *fast* staticlib for
+          # this exact triple natively, and this cell has been reproduced green (a 340 MB COFF amd64
+          # libimbhgo.a with the imbhgo_*/sable_* ABI). What is still unverified is *this binding* on
+          # Windows: nothing link-tests or runs the resulting archive, because `smoke` covers only
+          # linux/{amd64,arm64}, and link_windows.go's lib set is a first-pass guess that must union with
+          # sable's. best_effort only gates *failure* — a green build still uploads and publishes — so this
+          # costs nothing but regression detection. Promote it once a windows smoke job exists.
+          - { goos: windows, goarch: amd64, libc: "",    target: x86_64-pc-windows-gnu,      runner: ubuntu-latest, cross_cc: "zig cc -target x86_64-windows-gnu", strip: x86_64-w64-mingw32-strip, best_effort: true }
+    continue-on-error: ${{ matrix.best_effort || false }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch @ 2026-07-16
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install zig (cross C compiler)
+        if: matrix.cross_cc != ''
+        # Development moved to https://codeberg.org/mlugg/setup-zig; mlugg/setup-zig on GitHub is a
+        # read-only mirror (GitHub Actions cannot reference actions hosted off GitHub), so the mirror
+        # stays the correct `uses:` target. v2 is required: v1.x always built the tarball name in the
+        # pre-rename `zig-<os>-<arch>-<ver>` order, but Zig flipped it to `zig-<arch>-<os>-<ver>` in
+        # 0.14.1, so every mirror 404s. v1 also probed /builds (dev builds) instead of /download/<ver>.
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          # Pin Zig: an unpinned resolve tracks the latest release, and Zig's download
+          # index prunes/moves older tarballs, so it starts returning 404 with no change
+          # on our side. Pin a validated version to keep the cross-C compiler reproducible.
+          version: 0.14.1
+
+      - name: Install cross strip + zstd (Linux runners)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd binutils-aarch64-linux-gnu binutils-mingw-w64-x86-64
+
+      - name: Install zstd (macOS runners)
+        if: runner.os == 'macOS'
+        run: brew install zstd
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ github.event.inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          # Fail early if the tag and the compiled-in version disagree.
+          src="$(sed -n 's/^const Version = "\(.*\)"/\1/p' internal/release/release.go | head -n1)"
+          if [ "$v" != "$src" ]; then
+            echo "::error::tag $v != internal/release.Version $src"; exit 1
+          fi
+
+      - name: Build, strip, compress
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          LIBC: ${{ matrix.libc }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          CROSS_CC: ${{ matrix.cross_cc }}
+          STRIP: ${{ matrix.strip }}
+          OUTDIR: dist
+        run: bash scripts/build-release.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: libimbhgo-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.libc }}
+          path: |
+            dist/*.a.zst
+            dist/*.a.zst.sha256
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Build combined SHA256SUMS
+        working-directory: dist
+        run: sha256sum *.a.zst > SHA256SUMS
+      - name: Attach assets to the release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            dist/*.a.zst
+            dist/*.a.zst.sha256
+            dist/SHA256SUMS
+
+  smoke:
+    name: smoke ${{ matrix.goos }}/${{ matrix.goarch }} (no Rust)
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64, runner: ubuntu-latest }
+          - { goos: linux, goarch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Deliberately NO Rust toolchain and NO checkout of rust/target: this job proves a consumer can
+      # fetch the prebuilt archive and build against it with only Go installed.
+      - name: Fetch prebuilt + build a consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME}"
+          work="$(mktemp -d)"; cd "$work"
+          go mod init smoke
+
+          # This job always races the Go checksum DB. The tag it resolves was pushed minutes ago, and
+          # sum.golang.org only learns of a version when someone asks for it — the first lookup makes
+          # it fetch from proxy.golang.org, and until that lands it answers 500. That is exactly how
+          # v0.1.0 failed here (proxy recorded the version at 02:54:25Z; this job asked at ~02:55:5xZ),
+          # and a plain re-run minutes later passed with no change. So retry rather than fail the
+          # release on a cold cache. Not a correctness fallback: GONOSUMDB/GOFLAGS=-insecure would
+          # "fix" it by skipping the very verification this job exists to exercise.
+          retry() {
+            local n=0 max=8 delay=15
+            until "$@"; do
+              n=$((n + 1))
+              if [ "$n" -ge "$max" ]; then
+                echo "::error::'$*' still failing after ${max} attempts" >&2
+                return 1
+              fi
+              echo ">> attempt ${n}/${max} failed; retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+            done
+          }
+
+          # Redirect *inside* the retried unit, so each attempt truncates fetch-env.sh. Putting the
+          # redirection on the `retry` call would open the file once and let a partial failed attempt
+          # and the successful one concatenate into an invalid env script.
+          fetch_env() { go run "github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@${v}" -print-env >fetch-env.sh; }
+
+          retry go get "github.com/moriyoshi/imbh-go@${v}"
+          retry fetch_env
+          eval "$(cat fetch-env.sh)"
+          cat > main.go <<'EOF'
+          package main
+          import (
+              "context"
+              "fmt"
+              imbhgo "github.com/moriyoshi/imbh-go"
+          )
+          func main() {
+              db, err := imbhgo.OpenInMemory()
+              if err != nil { panic(err) }
+              defer db.Close()
+              _ = context.Background()
+              fmt.Println("opened in-memory imbh DB via prebuilt libimbhgo.a")
+          }
+          EOF
+          go mod tidy
+          go build -tags sable_extern_lib -o smoke .
+          ./smoke

@@ -1,0 +1,17 @@
+[package]
+name = "protobatch"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+# Same arrow (+ C Data Interface) that imbh pins, so this prototype validates the exact ABI the
+# binding will use. The C Data Interface itself is version-stable, but we match anyway.
+[dependencies]
+arrow = { version = "58.3.0", default-features = false, features = ["ffi"] }
+
+[profile.release]
+# Keep it simple/inspectable.
+opt-level = 2
