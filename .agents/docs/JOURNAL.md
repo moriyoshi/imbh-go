@@ -541,3 +541,37 @@ uploads and publishes an archive that nothing has ever linked or run. Added `gat
   path has never run on Windows. The writer lock uses `fs4` (cross-platform), and there is no
   path→URL conversion in imbh to blame, so the cause is genuinely unknown until the next CI run prints
   it. That run decides whether this is ours to fix, an upstream issue to file, or a documented skip.
+
+## 2026-07-28 — the error-slot map did leak, on abandoned streams (found by asking, not by a test)
+
+Prompted by a review question about `takeStoredError`'s thread safety. It is safe — the map is
+`Mutex`-guarded, the fetch is a `remove` (take-once), and every id comes from the single `queryCtr`,
+which is *why* opens reuse the query counter rather than getting their own: a second counter would hand
+out colliding ids into a shared map. But the follow-up question — "so then don't they leak?" — was the
+right one, and the answer was yes.
+
+- *The reachable leak.* `fetchQueryError` is called only from `finish`, and `finish` runs only when
+  `Next` reaches end-of-stream (or an import error). A caller that abandons a stream — `Close` without
+  draining, i.e. a cancelled request handler or an early return under `defer rows.Close()` — never runs
+  `finish`. If the handler had already recorded a terminal error, that entry was held until the process
+  exited. Plan errors make this trivially reachable: they are stored the moment the handler starts,
+  before Go pulls anything.
+- *Reproduced before fixing.* A probe that queries `SELECT * FROM no_such_table`, waits for
+  `imbhgo_pending_query_errors()` to reach 1, then `Close()`s without draining: the count stayed at 1
+  indefinitely. Now `TestAbandonedStreamClearsErrorSlot`, with `TestDrainedStreamKeepsItsError` guarding
+  the other side (a drained stream's `Err()` must survive `Close`, and `Close` stays idempotent).
+- *Fix.* `Rows.Close` clears the slot when the stream never ended, guarded by `r.ended` so the drained
+  path — where `finish` sets `ended` *before* calling `Close` — does not pay a second byte-Call. The
+  message is discarded rather than stored into `r.err`: `Err` is documented as meaningless before
+  iteration ends, and the point here is slot hygiene, not reporting.
+- *Residual window, left open deliberately and documented at the call site.* If the handler records an
+  error *after* Close's fetch, nothing claims it. Rust already avoids this for the common case — a send
+  to a dropped receiver returns without storing — so the window needs a scan/export error computed
+  concurrently with the abandon. Closing it properly means skipping the store once `tx.is_closed()`, at
+  roughly a dozen store sites; `TestNoLeak`'s `pendingQueryErrors() == 0` assertion is the tripwire that
+  would justify that work.
+- *Note on what the existing gate did and did not prove.* `TestNoLeak` has always asserted the pending
+  count is zero, and it passed — because the streams it abandons do not also fail. A leak gate only
+  covers the paths it walks.
+- *Not affected: the new open path.* `openFailure` always fetches, so a failed open cannot strand a
+  slot; the only loss there is a transport failure on the fetch itself.

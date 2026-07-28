@@ -237,4 +237,23 @@ func (r *Rows) fetchQueryError() error {
 func (r *Rows) Err() error { return r.err }
 
 // Close releases the cursor (and cancels the query if not fully drained). Idempotent.
-func (r *Rows) Close() { r.s.Close() }
+//
+// Abandoning a stream before end-of-stream means finish never runs, and finish is what clears this
+// query's Rust-side error slot — so Close does it instead. Without that, a query that had already
+// recorded a terminal error (a plan error, say, which is stored the moment the handler starts) holds
+// that entry until the process exits: a slow leak for any long-lived program that abandons streams.
+// See TestAbandonedStreamClearsErrorSlot.
+//
+// One window remains open by design: if the handler records an error *after* this fetch — it is still
+// running, and only a send failure makes it stop without storing — that entry is never claimed. The
+// Rust-side fix would be to skip storing once the consumer is gone (`tx.is_closed()`), at every store
+// site; the pending-error count in TestNoLeak is the tripwire if it ever matters in practice.
+func (r *Rows) Close() {
+	r.s.Close()
+	if !r.ended {
+		r.ended = true
+		// Discarded, not reported: the caller closed without asking for the error (Err is documented
+		// as meaningless before iteration ends). Clearing the slot is the whole point.
+		_, _ = takeStoredError(r.queryID)
+	}
+}
