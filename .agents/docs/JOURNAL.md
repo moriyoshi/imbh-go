@@ -610,3 +610,33 @@ imbhgo: open database at C:\Users\RUNNER~1\...\001: storage error: WAL dir fsync
   user: skip the five durable-DB tests on Windows and merge the gate green now, or hold the PR until imbh
   ships and we re-pin. Everything else on Windows passes: streaming, cancellation, backpressure, the Arrow
   leak/UAF gates, the whole in-memory surface.
+
+## 2026-07-28 — imbh 0.1.1 re-pinned: the Windows blocker is fixed upstream, `-race` promoted
+
+`imbh#3` was fixed and published within hours of being filed, so no test skip was ever needed.
+
+- *The upstream fix* (`ba448cd`, published as `imbh`/`imbh-core`/`imbh-lgtm`/`imbh-storage` `0.1.1`) is the
+  `#[cfg(windows)]` no-op, and it landed at **two** sites, not one: `wal.rs`'s `fsync_dir` (which our
+  report found) and a second in `imbh-storage/src/lib.rs`'s Parquet/manifest write path (which it missed —
+  the report generalized from one stack). Upstream's comment is more careful than our issue text was: it
+  spells out that `FlushFileBuffers` takes a *file* handle and the volume-wide flush needs administrator
+  rights, so a library has no directory-fsync primitive at all on Windows; and it flags the manifest site
+  as the more exposed of the two, since a durable manifest edit pointing at a lost rename is a dangling
+  reference rather than merely lost data. That trade is now documented in imbh's ARCHITECTURE.md §7.
+  Upstream also added a Windows CI job — the systemic gap the issue pointed at.
+- *Re-pin mechanics, worth remembering.* The declared requirements are caret ranges (`"0.1.0"` = `^0.1.0`),
+  so the actual pin lives in `Cargo.lock` and `cargo update -p imbh -p imbh-core -p imbh-lgtm` was the
+  whole functional change; cargo's semver unification keeps the `imbh-core` instance shared within `0.1.x`
+  automatically, so the lockstep worry in the Cargo.toml comment does not bite for a patch bump. The
+  declared versions were bumped to `0.1.1` anyway, along with every doc that named `0.1.0` as the current
+  pin (`AGENTS.md`/`CLAUDE.md` — a symlink to it, `ARCHITECTURE.md`, `OVERVIEW.md`, `PLAN.md`, `TODO.md`,
+  `README.md`), because a stale version in a prescription doc is the kind of thing that gets copied.
+- *`-race` promoted on the Windows leg.* It went in as `continue-on-error` on the inherited assumption
+  (from sable's `verify-windows` note) that the detector is unavailable on the fused Windows path.
+  Measurement beat the assumption: it ran and failed identically to the plain run, with no race report. So
+  it is now the hard step and the plain `go test` it hedged against is gone.
+- *Not promoted: the release-matrix cell.* `windows/amd64` stays `best_effort: true`. The standing
+  condition for promotion was a windows `smoke` job, and this gate is not one — it builds from source and
+  never fetches a published asset, so the `-print-env` consumer flow that broke a downstream release
+  remains untested. Worth keeping those two distinct: "the archive links and the suite passes" is what the
+  gate proves; "a consumer can fetch and use the published archive" is what smoke would.

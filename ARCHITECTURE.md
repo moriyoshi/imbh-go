@@ -31,7 +31,7 @@ CGO_LDFLAGS links ONE combined static archive:
 
 rust crate `imbhgo` (crate-type = ["staticlib"])   → rust/target/release/libimbhgo.a
    ├── depends on  sable  (rlib, git-pinned)   → runtime + registry + all sable_* C symbols
-   ├── depends on  imbh   (crates.io 0.1.0; features: cdata, proto, search, serde)
+   ├── depends on  imbh   (crates.io 0.1.1; features: cdata, proto, search, serde)
    └── imbhgo lib.rs: register_stream(OP_SQL, …) + FFI batch export + free shims
 ```
 

@@ -216,18 +216,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: go vet -tags sable_extern_lib ./...
 
-      - name: go test
+      # -race is the hard gate here, same as every other leg. It was introduced as an observational
+      # `continue-on-error` step, on the assumption behind sable's verify-windows note that the race
+      # detector is unavailable on the fused Windows path. Measurement said otherwise: it ran, and
+      # failed identically to the plain run (the on-disk open bug, imbh#3) with no race report. So the
+      # note does not apply to this binding, and the plain run it hedged against is gone.
+      - name: go test -race
         if: ${{ !cancelled() }}
-        run: go test -tags sable_extern_lib -count=1 ./...
-
-      # Not yet a hard gate: sable's own verify-windows job notes the race detector is unavailable on
-      # the fused Windows path, so this step is here to *measure* whether that also holds for this
-      # binding rather than to assume it. Promote it to a hard step (and drop the plain run above) if
-      # it comes back green; delete it with a note if it does not. Everywhere else -race is mandatory,
-      # because the leak / use-after-free gates around the two-free Arrow protocol are the point.
-      - name: go test -race (observational)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
         run: go test -tags sable_extern_lib -race -count=1 ./...
 
   # Compile-only guard for the Apple cells. release.yml builds them, but only on a tag — by then a

@@ -91,7 +91,7 @@ upstream entry point and the wiring pattern.
       Fixed in `../sable` (null-for-empty in `sable_call_result`; non-scanned `uintptr` in
       `call.go::callResultBytes`). See JOURNAL 2026-07-24.
 - [~] External consumability: **deps done** ✅ 2026-07-24 — no local path deps remain.
-      - **imbh** consumed from crates.io `0.1.0`: `imbh`/`imbh-core`/`imbh-lgtm` pinned in lockstep so the
+      - **imbh** consumed from crates.io `0.1.1`: `imbh`/`imbh-core`/`imbh-lgtm` pinned in lockstep so the
         `imbh-core` instance unifies.
       - **sable** pinned as a git dep at the **`main`** commit `0c6fe56` (carries the memory-safety fix
         from PR #1 and the Apple-target port from PR #2): Rust
@@ -179,10 +179,15 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
       file, a Unix-only durability idiom that returns `Access is denied. (os error 5)` on Windows, so every
       durable open dies at first-segment creation (`wal.rs:357`). Filed as
       **[moriyoshi/imbh#3](https://github.com/moriyoshi/imbh/issues/3)** with the `#[cfg(windows)]` no-op
-      fix. Until an imbh release carries it, `windows/amd64` is **in-memory only** — the five durable-DB
-      tests (`TestOpenReadOnly`, `TestOpenWith`, `TestOpsPassthrough`, `TestDurabilityReopen`,
-      `TestOpenErrorReportsCause`) cannot pass there. **Open decision:** skip those on Windows to merge the
-      gate green, or hold the PR until imbh ships the fix and we re-pin.
+      fix. **Fixed and re-pinned the same day**: imbh `ba448cd` took the no-op at *both* fsync sites (the
+      WAL's and a second one in the Parquet/manifest write path that this report had missed), published as
+      `0.1.1`; issue closed. No test skip was ever added — re-pinned to `0.1.1` instead (caret ranges meant
+      a `cargo update`, though the declared versions and every doc naming `0.1.0` were bumped too), and
+      `-race` was promoted to the hard step on the Windows leg at the same time. Local gate green against
+      the new pin. **Remaining:** the windows `smoke` job (this gate builds from source, so the
+      `-print-env` consumer flow over a *published asset* is still untested), and the release-matrix cell
+      stays `best_effort: true` until that exists — the standing promotion condition was a smoke job, and
+      a source build is not one.
 - [ ] **Add `workflow_dispatch` to `release.yml`.** The `Resolve version` step already has a
       `github.event.inputs.version` branch, but the workflow declares only the `push`/`v*` trigger — so that
       branch is dead code and every re-validation costs a tag delete + re-push. Declaring the trigger makes the
