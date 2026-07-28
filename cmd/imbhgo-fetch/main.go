@@ -11,6 +11,9 @@
 //	eval "$(go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.1.0 -print-env)"
 //	go build -tags sable_extern_lib ./...
 //
+// -print-env emits POSIX shell syntax on every platform; pass -shell cmd or -shell powershell to
+// get the native Windows form instead.
+//
 // This program is intentionally free of cgo and of any dependency on the imbhgo package itself, so
 // it builds and runs before the archive it fetches exists.
 package main
@@ -48,8 +51,18 @@ type options struct {
 	dest     string
 	baseURL  string
 	printEnv bool
+	shell    string
 	force    bool
 }
+
+// Shell dialects -print-env can emit. The default is POSIX: the documented contract is
+// `eval "$(imbhgo-fetch -print-env)"`, and on Windows CI that shell is git-bash/MSYS2 (what the
+// GitHub Actions `bash` shell runs), not cmd.exe.
+const (
+	shellSh         = "sh"
+	shellCmd        = "cmd"
+	shellPowerShell = "powershell"
+)
 
 func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("imbhgo-fetch", flag.ContinueOnError)
@@ -62,9 +75,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&o.dest, "dest", "", "destination directory for libimbhgo.a (default: user cache dir)")
 	fs.StringVar(&o.baseURL, "base-url", release.DefaultBaseURL, "release download base URL")
 	fs.BoolVar(&o.printEnv, "print-env", false, "print only the CGO_LDFLAGS export line on stdout (for eval)")
+	fs.StringVar(&o.shell, "shell", shellSh, "shell dialect for -print-env: sh, cmd, or powershell")
 	fs.BoolVar(&o.force, "force", false, "re-download even if a matching archive is already cached")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	switch o.shell {
+	case shellSh, shellCmd, shellPowerShell:
+	default:
+		return fmt.Errorf("unknown -shell %q (want %s, %s, or %s)", o.shell, shellSh, shellCmd, shellPowerShell)
 	}
 	if o.libc == "" {
 		o.libc = release.DefaultLibc(o.goos, osStatExists)
@@ -232,22 +251,59 @@ func decompressToFile(src []byte, dst string) error {
 }
 
 // emit prints the CGO_LDFLAGS the consumer's `go build -tags sable_extern_lib` needs. With
-// -print-env only the shell export line goes to stdout (so `eval "$(...)"` works); otherwise a
+// -print-env only the assignment line goes to stdout (so `eval "$(...)"` works); otherwise a
 // human-readable summary goes to stderr.
+//
+// The dialect comes from -shell, never from the target GOOS: what consumes the line is the shell
+// this tool was invoked from, and on Windows that is usually POSIX (git-bash / MSYS2). Deriving it
+// from GOOS emitted cmd.exe's `set VAR=…` into bash, where it sets positional parameters instead of
+// an environment variable — the consumer then built with an empty CGO_LDFLAGS.
 func emit(o options, stdout, stderr io.Writer, cacheDir string) error {
-	ldflags := fmt.Sprintf("-L%s -limbhgo", cacheDir)
+	ldflags := ldflagsFor(cacheDir)
 	if o.printEnv {
-		if o.goos == "windows" {
-			fmt.Fprintf(stdout, "set CGO_LDFLAGS=%s\n", ldflags)
-		} else {
-			fmt.Fprintf(stdout, "export CGO_LDFLAGS=%q\n", ldflags)
-		}
+		fmt.Fprintln(stdout, envLine(o.shell, "CGO_LDFLAGS", ldflags))
 		logf(stderr, "remember to build with -tags sable_extern_lib")
 		return nil
 	}
 	logf(stderr, "set CGO_LDFLAGS=%q and build with -tags sable_extern_lib", ldflags)
 	logf(stderr, "e.g.: CGO_LDFLAGS=%q go build -tags sable_extern_lib ./...", ldflags)
 	return nil
+}
+
+// ldflagsFor builds the -L/-l pair for cacheDir. cmd/go splits CGO_LDFLAGS into fields itself and
+// only honours a quote that opens a whole field, so a directory containing a space (routine under a
+// Windows user profile) must be quoted as one complete -L argument, not just around the path.
+func ldflagsFor(cacheDir string) string {
+	search := "-L" + cacheDir
+	if strings.ContainsAny(search, " \t") {
+		search = "'" + search + "'"
+	}
+	return search + " -limbhgo"
+}
+
+// envLine renders `name=value` in the requested shell dialect. shell has already been validated by
+// run; an unknown value falls back to POSIX rather than emitting nothing.
+func envLine(shell, name, value string) string {
+	switch shell {
+	case shellCmd:
+		// cmd.exe takes the rest of the line literally, quotes included; no escaping applies.
+		return fmt.Sprintf("set %s=%s", name, value)
+	case shellPowerShell:
+		return fmt.Sprintf("$env:%s = %s", name, powerShellQuote(value))
+	default:
+		return fmt.Sprintf("export %s=%s", name, posixQuote(value))
+	}
+}
+
+// posixQuote single-quotes s for a POSIX shell, so Windows backslashes, spaces and $ survive
+// verbatim through `eval`.
+func posixQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// powerShellQuote single-quotes s for PowerShell, where a literal quote is doubled.
+func powerShellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 func libcSuffix(libc string) string {

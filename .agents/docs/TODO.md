@@ -144,6 +144,13 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
       `-lkernel32` and `-ldbghelp` that ours omits). **Promote to a blocking cell once a windows `smoke`
       job exists**; until then a real regression there would pass unnoticed.
       *(2026-07-26 "CD round 5" entry)*
+      **The predicted regression arrived 2026-07-28**, and not at link time: a downstream consumer's
+      windows/amd64 release leg failed *before* the compiler, because `imbhgo-fetch -print-env` chose its
+      shell dialect from the **target** GOOS and emitted cmd.exe's `set VAR=…` into git-bash. Fixed on main
+      (`-shell sh|cmd|powershell`, POSIX default) — **but the fix is unreleased**, and consumers pin
+      `imbhgo-fetch@v0.1.0`, so this needs a `v0.1.1` tag to reach anyone. A windows `smoke` job that runs
+      the documented `eval "$(… -print-env)"` under the Actions `bash` shell would have caught it.
+      *(2026-07-28 journal entry)*
 - [ ] **Add `workflow_dispatch` to `release.yml`.** The `Resolve version` step already has a
       `github.event.inputs.version` branch, but the workflow declares only the `push`/`v*` trigger — so that
       branch is dead code and every re-validation costs a tag delete + re-push. Declaring the trigger makes the

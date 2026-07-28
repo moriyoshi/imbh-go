@@ -176,6 +176,90 @@ func TestFetchPrintEnv(t *testing.T) {
 	}
 }
 
+// TestFetchPrintEnvIsPOSIXForWindowsTarget is the regression gate for the windows/amd64 CI break:
+// -print-env used to switch to cmd.exe's `set VAR=…` whenever the TARGET was Windows, but the
+// consumer evaluates the line in git-bash, where `set` assigns positional parameters and leaves
+// CGO_LDFLAGS empty. The dialect must follow -shell only.
+func TestFetchPrintEnvIsPOSIXForWindowsTarget(t *testing.T) {
+	raw := []byte("payload")
+	fr, srv := newFakeRelease(t, raw, false)
+	defer srv.Close()
+	dest := t.TempDir()
+
+	o := baseOpts(fr, srv, dest)
+	o.printEnv = true
+	o.goos = "windows"
+	o.goarch = "amd64"
+	o.libc = ""
+	// The fake release only serves the linux cell, so let the cached-archive fallback carry the
+	// windows target through to emit; what matters here is the shape of the printed line.
+	o.baseURL = "http://127.0.0.1:0"
+	if err := os.WriteFile(filepath.Join(dest, "libimbhgo.a"), raw, 0o644); err != nil {
+		t.Fatalf("seed archive: %v", err)
+	}
+
+	var out, errBuf bytes.Buffer
+	if err := fetch(o, &out, &errBuf); err != nil {
+		t.Fatalf("fetch: %v\nstderr:\n%s", err, errBuf.String())
+	}
+	stdout := strings.TrimSpace(out.String())
+	if !strings.HasPrefix(stdout, "export CGO_LDFLAGS=") {
+		t.Fatalf("windows target must still print POSIX syntax, got: %q", stdout)
+	}
+	if strings.HasPrefix(stdout, "set ") {
+		t.Fatalf("cmd.exe syntax leaked into the default dialect: %q", stdout)
+	}
+}
+
+func TestEnvLineDialects(t *testing.T) {
+	const value = `-LC:\Users\me\lib -limbhgo`
+	for _, tc := range []struct {
+		shell string
+		want  string
+	}{
+		{shellSh, `export CGO_LDFLAGS='-LC:\Users\me\lib -limbhgo'`},
+		{shellCmd, `set CGO_LDFLAGS=-LC:\Users\me\lib -limbhgo`},
+		{shellPowerShell, `$env:CGO_LDFLAGS = '-LC:\Users\me\lib -limbhgo'`},
+	} {
+		if got := envLine(tc.shell, "CGO_LDFLAGS", value); got != tc.want {
+			t.Errorf("envLine(%q) = %q, want %q", tc.shell, got, tc.want)
+		}
+	}
+}
+
+func TestEnvLineQuotesEmbeddedQuote(t *testing.T) {
+	if got, want := posixQuote(`a'b`), `'a'\''b'`; got != want {
+		t.Errorf("posixQuote = %q, want %q", got, want)
+	}
+	if got, want := powerShellQuote(`a'b`), `'a''b'`; got != want {
+		t.Errorf("powerShellQuote = %q, want %q", got, want)
+	}
+}
+
+// A cache dir with a space must reach cmd/go as ONE field: its splitter only honours a quote that
+// opens a field, so quoting the path alone ("-L'C:\Program Files'") would split into two arguments.
+func TestLdflagsForQuotesWholeSearchPath(t *testing.T) {
+	if got, want := ldflagsFor("/home/me/lib"), "-L/home/me/lib -limbhgo"; got != want {
+		t.Errorf("ldflagsFor = %q, want %q", got, want)
+	}
+	got := ldflagsFor(`C:\Program Files\imbhgo`)
+	want := `'-LC:\Program Files\imbhgo' -limbhgo`
+	if got != want {
+		t.Errorf("ldflagsFor = %q, want %q", got, want)
+	}
+}
+
+func TestRunRejectsUnknownShell(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	err := run([]string{"-shell", "fish", "-print-env"}, &out, &errBuf)
+	if err == nil || !strings.Contains(err.Error(), "unknown -shell") {
+		t.Fatalf("expected unknown -shell error, got %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("nothing may reach stdout on a bad flag, got %q", out.String())
+	}
+}
+
 func TestParseSums(t *testing.T) {
 	manifest := "# comment\n" +
 		"aaaa  other-file.a.zst\n" +
