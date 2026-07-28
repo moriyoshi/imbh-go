@@ -11,7 +11,6 @@ import "C"
 
 import (
 	"encoding/json"
-	"errors"
 	"runtime"
 	"unsafe"
 )
@@ -29,10 +28,11 @@ func OpenReadOnly(path string) (*DB, error) {
 	if len(b) > 0 {
 		p = (*C.uint8_t)(unsafe.Pointer(&b[0]))
 	}
-	id := uint64(C.imbhgo_open_read_only(p, C.size_t(len(b))))
+	errID := queryCtr.Add(1)
+	id := uint64(C.imbhgo_open_read_only(p, C.size_t(len(b)), C.uint64_t(errID)))
 	runtime.KeepAlive(b)
 	if id == 0 {
-		return nil, errors.New("imbhgo: open read-only database at " + path + " failed")
+		return nil, openFailure("open read-only database at "+path, errID)
 	}
 	return &DB{id: id}, nil
 }
@@ -83,10 +83,11 @@ func OpenWith(opts DbOptions) (*DB, error) {
 	if len(b) > 0 {
 		p = (*C.uint8_t)(unsafe.Pointer(&b[0]))
 	}
-	id := uint64(C.imbhgo_open_opts(p, C.size_t(len(b))))
+	errID := queryCtr.Add(1)
+	id := uint64(C.imbhgo_open_opts(p, C.size_t(len(b)), C.uint64_t(errID)))
 	runtime.KeepAlive(b)
 	if id == 0 {
-		return nil, errors.New("imbhgo: open database at " + opts.Path + " failed")
+		return nil, openFailure("open database at "+opts.Path, errID)
 	}
 	return &DB{id: id}, nil
 }

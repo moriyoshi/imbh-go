@@ -502,3 +502,42 @@ uploads and publishes an archive that nothing has ever linked or run. Added `gat
 - *Still not covered by this.* The gate builds from source, so it never fetches a published asset: the
   `-print-env` consumer flow that broke a downstream release stays untested until a windows `smoke` job
   exists in `release.yml`. And the release-matrix cell stays `best_effort: true` until this job is green.
+
+## 2026-07-28 — the windows gate's first run: it links, and it found a real hole in our error reporting
+
+`gate-windows` went red on its first run, and the shape of the failure is the interesting part.
+
+- *What passed.* `cargo build --release --target x86_64-pc-windows-gnu` (native, ~32 min), **`go build`
+  — the link gate** — and `go vet`. So the standing worry is settled: `link_windows.go`'s directives plus
+  sable's `link_extern.go` Win32 set do resolve against the 340 MB COFF archive under a real mingw `ld`.
+  The archive we have been publishing as `best_effort` links.
+- *What failed.* Exactly four tests, all of them the **on-disk** open path: `TestOpenReadOnly`,
+  `TestOpenWith`, `TestOpsPassthrough`, `TestDurabilityReopen`, each at 0.00s with
+  `imbhgo: open database at C:\Users\RUNNER~1\...\001 failed`. Everything else — the whole in-memory
+  suite, streaming, cancellation, backpressure, the leak/UAF gates — passed on Windows.
+- *Correction to the `-race` assumption.* The `-race` step reported step-conclusion `success`, but that
+  is only `continue-on-error` masking it: the log shows it ran and produced the *same* four failures,
+  with no race report. So the detector **is** available on this binding's Windows path, contrary to the
+  note in sable's `verify-windows` job that we inherited. Once the open path works, `-race` should become
+  the hard step and the plain run should go.
+- *The real finding: we could not diagnose it, and that is our bug.* All four `imbhgo_open*` entry points
+  are direct C calls whose only return is a `u64` handle, and every failure arm was `Err(_) => 0`. The
+  cause — wrong permissions, `writer.lock` held by another writer, an unsupported platform — was thrown
+  away in Rust, and Go invented "open database at <path> failed". That is a defect on every platform, not
+  just Windows; it merely took a platform we could not run locally to make it hurt.
+- *Fix.* The open entry points now take an `err_id: u64`, a caller-allocated id drawn from the same
+  counter as query ids, and record the failure under it via the existing `QUERY_ERRORS` slot map; Go
+  fetches it through the `OP_QUERY_ERROR` byte-Call it already uses for terminal stream errors. No new
+  transport, one new parameter per entry point (`imbhgo.h` updated to match). `openFailure` composes
+  "imbhgo: <what>: <cause>" and falls back to the old generic form only if nothing was recorded.
+  Sample output now: `open database at /tmp/x: open error: database lock held: /tmp/x/writer.lock`,
+  `open read-only database at /tmp/x/nope: open error: ... does not exist`, `storage error: I/O error:
+  Not a directory (os error 20)`. Regression gates: `TestOpenErrorReportsCause` (second `Open` of a live
+  path must name a cause, not end in the generic " failed") and `TestOpenWithErrorReportsCause`.
+- *While refactoring, one fidelity bug avoided.* Folding the fetch into a shared `takeStoredError`
+  initially swallowed the transport error `fetchQueryError` used to return, which would have reported a
+  failed byte-Call as a clean end-of-stream. It returns `(string, error)` for that reason.
+- *Upstream context for the next step.* imbh's own CI is `ubuntu-latest` for every job, so its on-disk
+  path has never run on Windows. The writer lock uses `fs4` (cross-platform), and there is no
+  path→URL conversion in imbh to blame, so the cause is genuinely unknown until the next CI run prints
+  it. That run decides whether this is ours to fix, an upstream issue to file, or a documented skip.
