@@ -390,9 +390,10 @@ Honest current state:
   query without re-ingest, exercising WAL replay / segment reload). Read-only opens are tested too.
 - **Concurrency.** Stress-tested by `TestConcurrentQueries` (48 goroutines × 60 iters, mixed SQL + typed
   queries against one shared `Db`, all under `-race`).
-- **Portability.** `linux/{amd64,arm64}` are gated in CI (full build + `go test -race`). The Apple cells
-  are compile-checked in CI (`cargo check` on a macOS runner) and built on release tags, but the Go suite
-  has never run there; `windows/amd64` builds only, and stays best-effort.
+- **Portability.** `linux/{amd64,arm64}` are gated in CI (full build + `go test -race`), and
+  `windows/amd64` is gated natively (build for `x86_64-pc-windows-gnu`, link through the cgo directives,
+  run the suite; the race detector is not part of that leg). The Apple cells are compile-checked in CI
+  (`cargo check` on a macOS runner) and built on release tags, but the Go suite has never run there.
 - **Query surface.** SQL, typed queries, LGTM (PromQL / LogQL / TraceQL), cursor-paged logs (`QueryLogPage`
   + `QueryStats`), trace search, log volume, metric catalog / series / exemplars / instant, and attribute
   discovery are all exposed, alongside the read-only / builder-options / ops admin surface — see

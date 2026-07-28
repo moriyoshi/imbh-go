@@ -138,6 +138,98 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy --release --manifest-path rust/Cargo.toml -- -D warnings
 
+  # windows/amd64, NATIVE on a windows runner — the cell that has been published as `best_effort` in
+  # release.yml precisely because nothing ever link-tested or ran the archive it ships. release.yml
+  # cross-builds it with zig and uploads it unexecuted; the first consumer was the test, and that has
+  # already cost one downstream release break.
+  #
+  # Two things make this the *link* gate specifically. link_windows.go's system-lib set was written
+  # as a first-pass guess (-lws2_32 -lbcrypt -luserenv -lntdll -ladvapi32) and must union with what
+  # sable's own package contributes; under -tags sable_extern_lib, sable's link_extern.go adds
+  # `-lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp`, so the two sets only combine correctly when a
+  # real mingw ld resolves them together. Nothing but a native link proves that.
+  #
+  # Recipe follows sable's own verify-windows job, which certifies this exact triple natively:
+  # build for x86_64-pc-windows-gnu (the *gnu* ABI, because Go's cgo on Windows links with mingw
+  # gcc, not MSVC) and hand the archive to cgo through CGO_LDFLAGS — the same documented consumer
+  # form `imbhgo-fetch -print-env` emits.
+  gate-windows:
+    name: gate windows/amd64
+    runs-on: windows-latest
+    # Windows runners are the slowest of the fleet and this is the full DataFusion tree.
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash # Actions' bash on Windows is git-bash, which is where `pwd -W` comes from
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch @ 2026-07-16
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Rust's x86_64-pc-windows-gnu is the MSVCRT mingw flavour, which is C:\msys64\mingw64 (the
+      # ucrt64 tree is the incompatible one). Put it first so the C dependencies (zstd-sys) and Go's
+      # cgo use the *same* gcc — a static archive whose libgcc/msvcrt references disagree with the
+      # linker's is exactly the class of failure this job exists to catch, and the image also ships
+      # Strawberry Perl's gcc on PATH, which must not win.
+      - name: Use MSYS2's mingw-w64 gcc
+        run: |
+          if [ -x /c/msys64/mingw64/bin/gcc.exe ]; then
+            echo 'C:\msys64\mingw64\bin' >> "$GITHUB_PATH"
+          else
+            echo "::warning::C:\\msys64\\mingw64 not found; falling back to the gcc already on PATH"
+          fi
+
+      - name: Toolchain report
+        run: |
+          gcc --version | head -n1
+          echo "gcc -dumpmachine: $(gcc -dumpmachine)" # expect x86_64-w64-mingw32
+          go env CC CGO_ENABLED GOOS GOARCH
+
+      - name: cargo build --release --target x86_64-pc-windows-gnu
+        run: cargo build --release --manifest-path rust/Cargo.toml --target x86_64-pc-windows-gnu
+
+      # `pwd -W` renders the git-bash path as a Windows path (C:/…), which is what mingw ld needs.
+      # Only -L goes here; -limbhgo and the Win32 libs come from link_windows.go, so this exercises
+      # those directives rather than bypassing them.
+      - name: Resolve the archive search path
+        run: |
+          echo "CGO_LDFLAGS=-L$(pwd -W)/rust/target/x86_64-pc-windows-gnu/release" >> "$GITHUB_ENV"
+          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+
+      - name: go build (the link gate)
+        run: go build -tags sable_extern_lib ./...
+
+      - name: go vet
+        if: ${{ !cancelled() }}
+        run: go vet -tags sable_extern_lib ./...
+
+      - name: go test
+        if: ${{ !cancelled() }}
+        run: go test -tags sable_extern_lib -count=1 ./...
+
+      # Not yet a hard gate: sable's own verify-windows job notes the race detector is unavailable on
+      # the fused Windows path, so this step is here to *measure* whether that also holds for this
+      # binding rather than to assume it. Promote it to a hard step (and drop the plain run above) if
+      # it comes back green; delete it with a note if it does not. Everywhere else -race is mandatory,
+      # because the leak / use-after-free gates around the two-free Arrow protocol are the point.
+      - name: go test -race (observational)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: go test -tags sable_extern_lib -race -count=1 ./...
+
   # Compile-only guard for the Apple cells. release.yml builds them, but only on a tag — by then a
   # Linux-only API creeping into rust/ (or into a bumped sable/imbh pin) has already broken the
   # release. This runs on macOS rather than cross-checking from Linux for a concrete reason: `cargo

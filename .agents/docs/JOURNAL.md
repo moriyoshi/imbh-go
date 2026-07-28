@@ -470,3 +470,35 @@ PR runs but never a `main` run).
 - *Still open.* The first real-runner run is the validation bar (same one `release.yml` had to clear) —
   watch runner disk and cold-build wall clock (`timeout-minutes: 120`). And `windows/amd64` is still
   build-only and best-effort: the smoke job the previous entry argued for is not part of this change.
+
+## 2026-07-28 — a native `windows/amd64` gate (the cell we published but never linked)
+
+Follow-up to the CI entry above. `windows/amd64` was the one published cell with no verification of any
+kind: `release.yml` cross-builds it with zig, `best_effort: true` gates only *failure*, so a green build
+uploads and publishes an archive that nothing has ever linked or run. Added `gate-windows` to `ci.yml`.
+
+- *Recipe, borrowed rather than invented.* sable's own `verify-windows` job certifies this exact triple
+  natively, so this follows it: `windows-latest`, `defaults.run.shell: bash` (Actions' bash there is
+  git-bash, which is where `pwd -W` comes from), `cargo build --release --target x86_64-pc-windows-gnu`,
+  then `CGO_LDFLAGS="-L$(pwd -W)/rust/target/x86_64-pc-windows-gnu/release"`. The **gnu** ABI is not a
+  preference: Go's cgo on Windows links with mingw gcc, not MSVC. Only `-L` is passed, so `-limbhgo` and
+  the Win32 libs still come from `link_windows.go` — the job exercises those directives instead of
+  bypassing them, and it is the same shape `imbhgo-fetch -print-env` emits to a consumer.
+- *The "lib set must union with sable's" worry was already answered.* The standing TODO said
+  `link_windows.go` omits `-lkernel32` and `-ldbghelp` that sable adds. Reading the pinned module shows
+  sable's `link_extern.go` — the file active under `-tags sable_extern_lib` — carries
+  `#cgo windows LDFLAGS: -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp` itself, so cgo already collects
+  the union from both packages. Ours adds `-lbcrypt` and `-ladvapi32` on top. What was never proven is
+  that a real mingw `ld` resolves the combined set against a 340 MB COFF archive; that is the actual gate.
+- *One deliberate PATH step.* Rust's `x86_64-pc-windows-gnu` is the **MSVCRT** mingw flavour, i.e.
+  `C:\msys64\mingw64` — the `ucrt64` tree is the incompatible one — and the runner image also has
+  Strawberry Perl's gcc on PATH. The C dependencies (zstd-sys) and Go's cgo must use the *same* gcc, or
+  the archive's libgcc/msvcrt references disagree with the linker's, which is precisely the failure class
+  this job is for. So mingw64 is prepended and a `Toolchain report` step prints `gcc -dumpmachine`.
+- *`-race` is `continue-on-error`, on purpose and temporarily.* sable's job notes the race detector is
+  unavailable on the fused Windows path. Rather than assume that carries over, the step runs and reports.
+  One CI run answers it; then it either becomes a hard step or is deleted with a note. Everywhere else
+  `-race` stays mandatory — the two-free Arrow ownership gates are the reason.
+- *Still not covered by this.* The gate builds from source, so it never fetches a published asset: the
+  `-print-env` consumer flow that broke a downstream release stays untested until a windows `smoke` job
+  exists in `release.yml`. And the release-matrix cell stays `best_effort: true` until this job is green.

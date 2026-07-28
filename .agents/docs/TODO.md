@@ -156,6 +156,19 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
       (`-shell sh|cmd|powershell`, POSIX default) — **but the fix is unreleased**, and consumers pin
       `imbhgo-fetch@v0.1.0`, so this needs a `v0.1.1` tag to reach anyone. A windows `smoke` job that runs
       the documented `eval "$(… -print-env)"` under the Actions `bash` shell would have caught it.
+      **A native windows gate landed 2026-07-28** as `gate-windows` in `ci.yml`, following sable's own
+      `verify-windows` recipe: build for `x86_64-pc-windows-gnu` on a `windows-latest` runner (gnu ABI,
+      because Go's cgo on Windows links with mingw gcc, not MSVC), hand the archive to cgo via
+      `CGO_LDFLAGS="-L$(pwd -W)/…"` — the documented consumer form, so `link_windows.go`'s `-limbhgo` and
+      Win32 lib set are exercised rather than bypassed — then `go build` (the link gate) → `go vet` →
+      `go test`. Note the "must union with sable's" worry is **already handled by sable**: under
+      `-tags sable_extern_lib` its `link_extern.go` contributes `-lkernel32 -lntdll -luserenv -lws2_32
+      -ldbghelp`, so the union is complete at the cgo level; what was never proven is that a real mingw
+      `ld` resolves the combined set, which is what this job settles. `-race` is `continue-on-error` for
+      now (sable reports the detector unavailable on the fused Windows path — this measures whether that
+      also holds here instead of assuming it). **Remaining:** promote the release-matrix cell out of
+      `best_effort: true` once this job is green, and add the windows `smoke` job for the `-print-env`
+      consumer flow, which this gate does *not* cover (it builds from source, never fetches an asset).
       *(2026-07-28 journal entry)*
 - [ ] **Add `workflow_dispatch` to `release.yml`.** The `Resolve version` step already has a
       `github.event.inputs.version` branch, but the workflow declares only the `push`/`v*` trigger — so that
