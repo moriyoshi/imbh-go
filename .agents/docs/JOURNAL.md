@@ -388,3 +388,37 @@ need an upstream sable GOOS-gate + re-pin.
   (sable contributes `-lkernel32` and `-ldbghelp` that ours omits). The workflow comment was rewritten
   to state that current reason instead of the stale "unverified sable support". Promote the cell to
   blocking once a windows smoke job exists.
+
+## 2026-07-28 — `imbhgo-fetch -print-env` picked its shell from the wrong axis (downstream windows CI break)
+
+A consumer (`moriyoshi/cornus`, [run 30339923183](https://github.com/moriyoshi/cornus/actions/runs/30339923183/job/90214109442))
+failed its `windows/amd64` release leg. The interesting part is *where*: not at the link step everyone
+expected (see the standing windows TODO), but three lines earlier, in our own fetch tool.
+
+- *The failure.* The consumer does exactly what our README documents —
+  `eval "$(go run …/cmd/imbhgo-fetch@v0.1.0 -print-env)"` — then asserts `CGO_LDFLAGS` is non-empty.
+  The download itself was **entirely successful** (`installed C:\Users\runneradmin\AppData\Local\imbhgo\v0.1.0\windows-amd64\libimbhgo.a`),
+  and the very next line was `ERROR: imbhgo-fetch did not report CGO_LDFLAGS`.
+- *Root cause.* `emit` branched on `o.goos == "windows"` and printed cmd.exe syntax, `set CGO_LDFLAGS=…`.
+  The consumer's shell is git-bash (what the GitHub Actions `bash` shell is on a windows runner), where
+  `set VAR=…` is the POSIX builtin that assigns **positional parameters** — it succeeds, exports nothing,
+  and returns 0. A silent no-op, which is why the failure surfaced as an empty variable rather than an
+  eval error.
+- *The category of bug.* The dialect was derived from the wrong axis. **The target GOOS says nothing
+  about the shell the tool was invoked from** — they are independent, and doubly so when cross-compiling
+  (`-os windows` from Linux hit the same branch). The only thing that knows the dialect is the caller,
+  so it became a flag: `-shell sh|cmd|powershell`, POSIX default, validated in `run` before any download.
+- *Quoting hardened while there.* `%q` (Go quoting, inside double quotes) happened to survive bash for
+  `C:\…` paths, but not a `$`. Now single-quote escaping per dialect (`'\''` for POSIX, doubling for
+  PowerShell). Separately, `cmd/go`'s `CGO_LDFLAGS` splitter only honours a quote that **opens a whole
+  field**, so a cache dir containing a space needs `'-LC:\Program Files\…'`, not `-L'C:\Program Files\…'`
+  — routine under a Windows user profile, and previously broken. `ldflagsFor` handles it.
+- *Regression gates.* `TestFetchPrintEnvIsPOSIXForWindowsTarget` (target windows must still print
+  `export`), `TestEnvLineDialects`, `TestEnvLineQuotesEmbeddedQuote`, `TestLdflagsForQuotesWholeSearchPath`,
+  `TestRunRejectsUnknownShell`. Full Go gate green under `-race`; no Rust change.
+- *The real lesson, and the cost.* This is the second-order cost of `best_effort: true` on a cell with no
+  smoke job: we publish a windows archive that no CI ever *consumes*, so the first consumer is the test.
+  A windows smoke job running the documented `eval` line under the Actions `bash` shell would have caught
+  this in one step, and would still catch the link-time failure the TODO predicts. Note also that the fix
+  reaches nobody until a **`v0.1.1`** tag exists — consumers pin `imbhgo-fetch@v0.1.0`, and a module-proxy
+  pin is immune to fixes on `main`.

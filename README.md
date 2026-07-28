@@ -85,6 +85,17 @@ go build -tags sable_extern_lib ./...
 
 - The `sable_extern_lib` build tag is **required** — it makes sable's Go package link the combined
   archive rather than its own `libsable.a`.
+- `-print-env` emits POSIX shell syntax on **every** platform, including Windows — the shell that
+  consumes the line is the one you invoked the tool from, and on Windows CI that is normally
+  git-bash / MSYS2. From a native Windows shell, ask for its dialect explicitly:
+
+  ```bat
+  for /f "delims=" %i in ('go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.1.0 -print-env -shell cmd') do @%i
+  ```
+
+  ```powershell
+  go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.1.0 -print-env -shell powershell | Invoke-Expression
+  ```
 - The fetch tool caches the archive under your user cache dir (override with `-dest`) and re-detects
   glibc vs musl on Linux automatically (override with `-libc`).
 - Prebuilt cells: Linux `amd64`/`arm64` (glibc and musl), macOS `amd64`/`arm64`, and Windows `amd64`
