@@ -88,9 +88,10 @@ type DB struct{ id uint64 }
 
 // OpenInMemory opens an ephemeral, process-local database (great for tests and dev loops).
 func OpenInMemory() (*DB, error) {
-	id := uint64(C.imbhgo_open_memory())
+	errID := queryCtr.Add(1)
+	id := uint64(C.imbhgo_open_memory(C.uint64_t(errID)))
 	if id == 0 {
-		return nil, errors.New("imbhgo: open in-memory database failed")
+		return nil, openFailure("open in-memory database", errID)
 	}
 	return &DB{id: id}, nil
 }
@@ -102,12 +103,37 @@ func Open(path string) (*DB, error) {
 	if len(b) > 0 {
 		p = (*C.uint8_t)(unsafe.Pointer(&b[0]))
 	}
-	id := uint64(C.imbhgo_open(p, C.size_t(len(b))))
+	errID := queryCtr.Add(1)
+	id := uint64(C.imbhgo_open(p, C.size_t(len(b)), C.uint64_t(errID)))
 	runtime.KeepAlive(b)
 	if id == 0 {
-		return nil, errors.New("imbhgo: open database at " + path + " failed")
+		return nil, openFailure("open database at "+path, errID)
 	}
 	return &DB{id: id}, nil
+}
+
+// openFailure turns a 0 handle into an error carrying the cause the Rust side stashed under errID.
+// The imbhgo_open* entry points are direct C calls with only a u64 return, so the reason travels
+// out-of-band through the same slot map query errors use. Falls back to the bare "failed" form only
+// if nothing was recorded (or the fetch itself fails), which should not happen.
+func openFailure(what string, errID uint64) error {
+	if cause, err := takeStoredError(errID); err == nil && cause != "" {
+		return errors.New("imbhgo: " + what + ": " + cause)
+	}
+	return errors.New("imbhgo: " + what + " failed")
+}
+
+// takeStoredError fetches and clears the message stored under id on the Rust side; "" if there is
+// none. The error is the transport's own, distinct from a stored message. Shared by the open path
+// and the streaming-query terminal-error path.
+func takeStoredError(id uint64) (string, error) {
+	req := make([]byte, 8)
+	binary.LittleEndian.PutUint64(req, id)
+	resp, err := sable.Call(opQueryError, req)
+	if err != nil {
+		return "", err
+	}
+	return string(resp), nil
 }
 
 // Close drops the database handle.
@@ -196,14 +222,12 @@ func (r *Rows) finish(importErr error) error {
 
 // fetchQueryError retrieves and clears this query's terminal error from the Rust side (empty = clean).
 func (r *Rows) fetchQueryError() error {
-	req := make([]byte, 8)
-	binary.LittleEndian.PutUint64(req, r.queryID)
-	resp, err := sable.Call(opQueryError, req)
+	msg, err := takeStoredError(r.queryID)
 	if err != nil {
 		return err
 	}
-	if len(resp) > 0 {
-		return errors.New("imbhgo: query failed: " + string(resp))
+	if msg != "" {
+		return errors.New("imbhgo: query failed: " + msg)
 	}
 	return nil
 }
@@ -213,4 +237,23 @@ func (r *Rows) fetchQueryError() error {
 func (r *Rows) Err() error { return r.err }
 
 // Close releases the cursor (and cancels the query if not fully drained). Idempotent.
-func (r *Rows) Close() { r.s.Close() }
+//
+// Abandoning a stream before end-of-stream means finish never runs, and finish is what clears this
+// query's Rust-side error slot — so Close does it instead. Without that, a query that had already
+// recorded a terminal error (a plan error, say, which is stored the moment the handler starts) holds
+// that entry until the process exits: a slow leak for any long-lived program that abandons streams.
+// See TestAbandonedStreamClearsErrorSlot.
+//
+// One window remains open by design: if the handler records an error *after* this fetch — it is still
+// running, and only a send failure makes it stop without storing — that entry is never claimed. The
+// Rust-side fix would be to skip storing once the consumer is gone (`tx.is_closed()`), at every store
+// site; the pending-error count in TestNoLeak is the tripwire if it ever matters in practice.
+func (r *Rows) Close() {
+	r.s.Close()
+	if !r.ended {
+		r.ended = true
+		// Discarded, not reported: the caller closed without asking for the error (Err is documented
+		// as meaningless before iteration ends). Clearing the slot is the whole point.
+		_, _ = takeStoredError(r.queryID)
+	}
+}

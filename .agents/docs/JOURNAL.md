@@ -422,3 +422,255 @@ expected (see the standing windows TODO), but three lines earlier, in our own fe
   this in one step, and would still catch the link-time failure the TODO predicts. Note also that the fix
   reaches nobody until a **`v0.1.1`** tag exists — consumers pin `imbhgo-fetch@v0.1.0`, and a module-proxy
   pin is immune to fixes on `main`.
+
+## 2026-07-28 — CI at last: `ci.yml` runs the standard gate on both Linux arches (+ an Apple compile guard)
+
+Until today the repo had CD but no CI: `release.yml` builds six cells and publishes them on a tag, but it
+never runs a test, so `go test -race ./...` and clippy had only ever run on one arm64 developer box. Added
+`.github/workflows/ci.yml` (push to `main`, every PR, `workflow_dispatch`; `concurrency` cancels superseded
+PR runs but never a `main` run).
+
+- *Shape.* Three jobs. `lint` needs neither Rust nor the 450 MB archive — `gofmt -l`, `go vet` + `go test
+  -race` over the deliberately cgo-free `./cmd/...` and `./internal/...`, and a `CGO_ENABLED=0`
+  cross-compile of `imbhgo-fetch` for all five published cells — so a formatting or pure-Go break reports
+  in about a minute instead of after a DataFusion build. `gate` is the real thing on `linux/amd64`
+  (`ubuntu-latest`) and `linux/arm64` (`ubuntu-24.04-arm`): `cargo build --release` (host build, no
+  `--target`, so the archive lands where `link_linux.go`'s `-L${SRCDIR}/rust/target/release` already looks
+  and cgo needs no `CGO_LDFLAGS`) → `go build` → `go vet` → `go test -race` → `go run ./examples/quickstart`
+  → `cargo clippy -- -D warnings`. `apple-check` is compile-only for the two Apple triples.
+- *`if: ${{ !cancelled() }}` from `go vet` onward.* One failing check must not hide the others; a single run
+  should report vet + tests + clippy together rather than one per push. Clippy is deliberately **last**: it
+  reaches the workspace crate through `RUSTC_WORKSPACE_WRAPPER`, so only `rust/src/lib.rs` recompiles once
+  the release build above is warm, and its `-D warnings` failure never costs us the test signal.
+- *No `cargo test`, deliberately.* `rust/` carries no `#[test]` and its only target is a `staticlib` whose
+  sable half resolves Go runtime symbols; a test harness would have nothing to assert and nothing to link
+  against. The Rust code is covered through the Go suite.
+- *No `cargo fmt --check`, and this is a real finding.* `rust/src/lib.rs` is **not** rustfmt-clean at the
+  default `max_width = 100` — it is written at roughly 110 and rustfmt wants to break `split_json_req`,
+  the `sable::register(OP_*, …)` block, the `let`-chains, and more. Adding the check would have made CI red
+  on day one. Landing it later means either accepting a large reformat diff or committing a `rustfmt.toml`
+  with the wider width; either is a deliberate decision, not a drive-by.
+- *The Apple guard runs on macOS, and the old TODO's premise was wrong.* The standing item claimed `cargo
+  check --target {aarch64,x86_64}-apple-darwin` "needs no macOS SDK (check never links), so a plain Linux
+  job works". Check never links, but it **does run build scripts** — and those compile C. Measured on this
+  Linux box: `cargo check --release --target x86_64-apple-darwin` dies in cc-rs building `zstd-sys` with
+  `cc: error: unrecognized command-line option '-arch'` (cc-rs hands the host gcc `-arch x86_64
+  -mmacosx-version-min=10.7`). Making it work on Linux would need the same zig-cc shims
+  `scripts/build-release.sh` carries. A `macos-14` runner compiles both triples natively with Xcode's clang
+  and no cross setup — and the repo is public, so the runner is free. Note the aarch64 case would have
+  hidden this: `rust/target/aarch64-apple-darwin/` already existed locally with cached build-script output,
+  so only the untouched x86_64 triple exposed the failure. Pick the cold cell when validating a cross build.
+- *Caching.* `Swatinem/rust-cache` with `workspaces: rust` and `save-if: github.ref == 'refs/heads/main'`,
+  so PR branches restore main's warm entry but can never evict it (repo-wide cache is 10 GB and this tree
+  is large: the host `rust/target/release` here is 6.8 GB, each `--target` cell about 1.6 GB).
+- *Local dry-run before landing.* Every step was executed on this box first: `gofmt -l .` clean, `go vet`
+  clean, the cgo-free tests pass, all five cross-compiles of `imbhgo-fetch` build, `go test -race -count=1
+  ./...` green in 8.6 s wall (the Rust build, not the suite, is what makes CI slow), the quickstart prints
+  its three sections, and `cargo clippy --release -- -D warnings` is clean.
+- *Still open.* The first real-runner run is the validation bar (same one `release.yml` had to clear) —
+  watch runner disk and cold-build wall clock (`timeout-minutes: 120`). And `windows/amd64` is still
+  build-only and best-effort: the smoke job the previous entry argued for is not part of this change.
+
+## 2026-07-28 — a native `windows/amd64` gate (the cell we published but never linked)
+
+Follow-up to the CI entry above. `windows/amd64` was the one published cell with no verification of any
+kind: `release.yml` cross-builds it with zig, `best_effort: true` gates only *failure*, so a green build
+uploads and publishes an archive that nothing has ever linked or run. Added `gate-windows` to `ci.yml`.
+
+- *Recipe, borrowed rather than invented.* sable's own `verify-windows` job certifies this exact triple
+  natively, so this follows it: `windows-latest`, `defaults.run.shell: bash` (Actions' bash there is
+  git-bash, which is where `pwd -W` comes from), `cargo build --release --target x86_64-pc-windows-gnu`,
+  then `CGO_LDFLAGS="-L$(pwd -W)/rust/target/x86_64-pc-windows-gnu/release"`. The **gnu** ABI is not a
+  preference: Go's cgo on Windows links with mingw gcc, not MSVC. Only `-L` is passed, so `-limbhgo` and
+  the Win32 libs still come from `link_windows.go` — the job exercises those directives instead of
+  bypassing them, and it is the same shape `imbhgo-fetch -print-env` emits to a consumer.
+- *The "lib set must union with sable's" worry was already answered.* The standing TODO said
+  `link_windows.go` omits `-lkernel32` and `-ldbghelp` that sable adds. Reading the pinned module shows
+  sable's `link_extern.go` — the file active under `-tags sable_extern_lib` — carries
+  `#cgo windows LDFLAGS: -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp` itself, so cgo already collects
+  the union from both packages. Ours adds `-lbcrypt` and `-ladvapi32` on top. What was never proven is
+  that a real mingw `ld` resolves the combined set against a 340 MB COFF archive; that is the actual gate.
+- *One deliberate PATH step.* Rust's `x86_64-pc-windows-gnu` is the **MSVCRT** mingw flavour, i.e.
+  `C:\msys64\mingw64` — the `ucrt64` tree is the incompatible one — and the runner image also has
+  Strawberry Perl's gcc on PATH. The C dependencies (zstd-sys) and Go's cgo must use the *same* gcc, or
+  the archive's libgcc/msvcrt references disagree with the linker's, which is precisely the failure class
+  this job is for. So mingw64 is prepended and a `Toolchain report` step prints `gcc -dumpmachine`.
+- *`-race` is `continue-on-error`, on purpose and temporarily.* sable's job notes the race detector is
+  unavailable on the fused Windows path. Rather than assume that carries over, the step runs and reports.
+  One CI run answers it; then it either becomes a hard step or is deleted with a note. Everywhere else
+  `-race` stays mandatory — the two-free Arrow ownership gates are the reason.
+- *Still not covered by this.* The gate builds from source, so it never fetches a published asset: the
+  `-print-env` consumer flow that broke a downstream release stays untested until a windows `smoke` job
+  exists in `release.yml`. And the release-matrix cell stays `best_effort: true` until this job is green.
+
+## 2026-07-28 — the windows gate's first run: it links, and it found a real hole in our error reporting
+
+`gate-windows` went red on its first run, and the shape of the failure is the interesting part.
+
+- *What passed.* `cargo build --release --target x86_64-pc-windows-gnu` (native, ~32 min), **`go build`
+  — the link gate** — and `go vet`. So the standing worry is settled: `link_windows.go`'s directives plus
+  sable's `link_extern.go` Win32 set do resolve against the 340 MB COFF archive under a real mingw `ld`.
+  The archive we have been publishing as `best_effort` links.
+- *What failed.* Exactly four tests, all of them the **on-disk** open path: `TestOpenReadOnly`,
+  `TestOpenWith`, `TestOpsPassthrough`, `TestDurabilityReopen`, each at 0.00s with
+  `imbhgo: open database at C:\Users\RUNNER~1\...\001 failed`. Everything else — the whole in-memory
+  suite, streaming, cancellation, backpressure, the leak/UAF gates — passed on Windows.
+- *Correction to the `-race` assumption.* The `-race` step reported step-conclusion `success`, but that
+  is only `continue-on-error` masking it: the log shows it ran and produced the *same* four failures,
+  with no race report. So the detector **is** available on this binding's Windows path, contrary to the
+  note in sable's `verify-windows` job that we inherited. Once the open path works, `-race` should become
+  the hard step and the plain run should go.
+- *The real finding: we could not diagnose it, and that is our bug.* All four `imbhgo_open*` entry points
+  are direct C calls whose only return is a `u64` handle, and every failure arm was `Err(_) => 0`. The
+  cause — wrong permissions, `writer.lock` held by another writer, an unsupported platform — was thrown
+  away in Rust, and Go invented "open database at <path> failed". That is a defect on every platform, not
+  just Windows; it merely took a platform we could not run locally to make it hurt.
+- *Fix.* The open entry points now take an `err_id: u64`, a caller-allocated id drawn from the same
+  counter as query ids, and record the failure under it via the existing `QUERY_ERRORS` slot map; Go
+  fetches it through the `OP_QUERY_ERROR` byte-Call it already uses for terminal stream errors. No new
+  transport, one new parameter per entry point (`imbhgo.h` updated to match). `openFailure` composes
+  "imbhgo: <what>: <cause>" and falls back to the old generic form only if nothing was recorded.
+  Sample output now: `open database at /tmp/x: open error: database lock held: /tmp/x/writer.lock`,
+  `open read-only database at /tmp/x/nope: open error: ... does not exist`, `storage error: I/O error:
+  Not a directory (os error 20)`. Regression gates: `TestOpenErrorReportsCause` (second `Open` of a live
+  path must name a cause, not end in the generic " failed") and `TestOpenWithErrorReportsCause`.
+- *While refactoring, one fidelity bug avoided.* Folding the fetch into a shared `takeStoredError`
+  initially swallowed the transport error `fetchQueryError` used to return, which would have reported a
+  failed byte-Call as a clean end-of-stream. It returns `(string, error)` for that reason.
+- *Upstream context for the next step.* imbh's own CI is `ubuntu-latest` for every job, so its on-disk
+  path has never run on Windows. The writer lock uses `fs4` (cross-platform), and there is no
+  path→URL conversion in imbh to blame, so the cause is genuinely unknown until the next CI run prints
+  it. That run decides whether this is ours to fix, an upstream issue to file, or a documented skip.
+
+## 2026-07-28 — the error-slot map did leak, on abandoned streams (found by asking, not by a test)
+
+Prompted by a review question about `takeStoredError`'s thread safety. It is safe — the map is
+`Mutex`-guarded, the fetch is a `remove` (take-once), and every id comes from the single `queryCtr`,
+which is *why* opens reuse the query counter rather than getting their own: a second counter would hand
+out colliding ids into a shared map. But the follow-up question — "so then don't they leak?" — was the
+right one, and the answer was yes.
+
+- *The reachable leak.* `fetchQueryError` is called only from `finish`, and `finish` runs only when
+  `Next` reaches end-of-stream (or an import error). A caller that abandons a stream — `Close` without
+  draining, i.e. a cancelled request handler or an early return under `defer rows.Close()` — never runs
+  `finish`. If the handler had already recorded a terminal error, that entry was held until the process
+  exited. Plan errors make this trivially reachable: they are stored the moment the handler starts,
+  before Go pulls anything.
+- *Reproduced before fixing.* A probe that queries `SELECT * FROM no_such_table`, waits for
+  `imbhgo_pending_query_errors()` to reach 1, then `Close()`s without draining: the count stayed at 1
+  indefinitely. Now `TestAbandonedStreamClearsErrorSlot`, with `TestDrainedStreamKeepsItsError` guarding
+  the other side (a drained stream's `Err()` must survive `Close`, and `Close` stays idempotent).
+- *Fix.* `Rows.Close` clears the slot when the stream never ended, guarded by `r.ended` so the drained
+  path — where `finish` sets `ended` *before* calling `Close` — does not pay a second byte-Call. The
+  message is discarded rather than stored into `r.err`: `Err` is documented as meaningless before
+  iteration ends, and the point here is slot hygiene, not reporting.
+- *Residual window, left open deliberately and documented at the call site.* If the handler records an
+  error *after* Close's fetch, nothing claims it. Rust already avoids this for the common case — a send
+  to a dropped receiver returns without storing — so the window needs a scan/export error computed
+  concurrently with the abandon. Closing it properly means skipping the store once `tx.is_closed()`, at
+  roughly a dozen store sites; `TestNoLeak`'s `pendingQueryErrors() == 0` assertion is the tripwire that
+  would justify that work.
+- *Note on what the existing gate did and did not prove.* `TestNoLeak` has always asserted the pending
+  count is zero, and it passed — because the streams it abandons do not also fail. A leak gate only
+  covers the paths it walks.
+- *Not affected: the new open path.* `openFailure` always fetches, so a failed open cannot strand a
+  slot; the only loss there is a transport failure on the fetch itself.
+
+## 2026-07-28 — what the windows gate found: an upstream Unix-only durability idiom (imbh#3)
+
+With the open error finally crossing the FFI boundary, the second `gate-windows` run named the cause in
+one line, on all five durable-DB tests:
+
+```
+imbhgo: open database at C:\Users\RUNNER~1\...\001: storage error: WAL dir fsync: Access is denied. (os error 5)
+```
+
+- *Root cause, upstream.* `imbh-storage`'s `fsync_dir` (`crates/imbh-storage/src/wal.rs:315`, identical in
+  the published `0.1.0` and `main` @ `bd8e359`) does `File::open(dir)` + `sync_all()` — the Unix idiom for
+  making a newly created file's *directory entry* durable. Windows refuses to open a directory as a file
+  without `FILE_FLAG_BACKUP_SEMANTICS`, so it returns `ERROR_ACCESS_DENIED`. The first call site is fresh-DB
+  first-segment creation (`wal.rs:357`), which is why *every* durable open fails and why it fails at 0.00s.
+  The other is rotation (`wal.rs:421`).
+- *Filed as [moriyoshi/imbh#3](https://github.com/moriyoshi/imbh/issues/3)* with the `#[cfg(windows)]`
+  no-op fix and the SQLite/LMDB/RocksDB precedent (NTFS journals the metadata; a directory handle cannot
+  be flushed with `FlushFileBuffers` even with the backup-semantics flag — flagged in the issue as the one
+  claim not verified here, since it decides no-op vs. flag).
+- *Why it survived to a release.* Every job in imbh's `ci.yml` is `ubuntu-latest`. A single
+  `windows-latest` `cargo test` on `imbh-storage` would have caught it at first-segment creation. The
+  triple itself builds fine — this is one Unix-shaped call, not a port.
+- *What this says about the gate.* It paid for itself on its first two runs: it proved the link (the thing
+  the standing TODO doubted) and found a genuine platform defect nobody knew about, in a cell we had been
+  *publishing* as `best_effort` for two releases. Note the ordering that made it cheap: run 1 said
+  "failed", run 2 named the cause — the error-surfacing fix in between is what turned an opaque red into a
+  one-line diagnosis, which is the argument for never letting an FFI boundary swallow an error.
+- *Also settled: `-race` works on Windows.* Its step-conclusion `success` was `continue-on-error` masking
+  an identical failure with no race report. Once the suite passes there, `-race` becomes the hard step and
+  the plain run goes — the note inherited from sable's `verify-windows` job does not apply to this binding.
+- *Status.* `windows/amd64` is in-memory-only until an imbh release carries the fix. Open decision, for the
+  user: skip the five durable-DB tests on Windows and merge the gate green now, or hold the PR until imbh
+  ships and we re-pin. Everything else on Windows passes: streaming, cancellation, backpressure, the Arrow
+  leak/UAF gates, the whole in-memory surface.
+
+## 2026-07-28 — imbh 0.1.1 re-pinned: the Windows blocker is fixed upstream, `-race` promoted
+
+`imbh#3` was fixed and published within hours of being filed, so no test skip was ever needed.
+
+- *The upstream fix* (`ba448cd`, published as `imbh`/`imbh-core`/`imbh-lgtm`/`imbh-storage` `0.1.1`) is the
+  `#[cfg(windows)]` no-op, and it landed at **two** sites, not one: `wal.rs`'s `fsync_dir` (which our
+  report found) and a second in `imbh-storage/src/lib.rs`'s Parquet/manifest write path (which it missed —
+  the report generalized from one stack). Upstream's comment is more careful than our issue text was: it
+  spells out that `FlushFileBuffers` takes a *file* handle and the volume-wide flush needs administrator
+  rights, so a library has no directory-fsync primitive at all on Windows; and it flags the manifest site
+  as the more exposed of the two, since a durable manifest edit pointing at a lost rename is a dangling
+  reference rather than merely lost data. That trade is now documented in imbh's ARCHITECTURE.md §7.
+  Upstream also added a Windows CI job — the systemic gap the issue pointed at.
+- *Re-pin mechanics, worth remembering.* The declared requirements are caret ranges (`"0.1.0"` = `^0.1.0`),
+  so the actual pin lives in `Cargo.lock` and `cargo update -p imbh -p imbh-core -p imbh-lgtm` was the
+  whole functional change; cargo's semver unification keeps the `imbh-core` instance shared within `0.1.x`
+  automatically, so the lockstep worry in the Cargo.toml comment does not bite for a patch bump. The
+  declared versions were bumped to `0.1.1` anyway, along with every doc that named `0.1.0` as the current
+  pin (`AGENTS.md`/`CLAUDE.md` — a symlink to it, `ARCHITECTURE.md`, `OVERVIEW.md`, `PLAN.md`, `TODO.md`,
+  `README.md`), because a stale version in a prescription doc is the kind of thing that gets copied.
+- *`-race` promoted on the Windows leg.* It went in as `continue-on-error` on the inherited assumption
+  (from sable's `verify-windows` note) that the detector is unavailable on the fused Windows path.
+  Measurement beat the assumption: it ran and failed identically to the plain run, with no race report. So
+  it is now the hard step and the plain `go test` it hedged against is gone.
+- *Not promoted: the release-matrix cell.* `windows/amd64` stays `best_effort: true`. The standing
+  condition for promotion was a windows `smoke` job, and this gate is not one — it builds from source and
+  never fetches a published asset, so the `-print-env` consumer flow that broke a downstream release
+  remains untested. Worth keeping those two distinct: "the archive links and the suite passes" is what the
+  gate proves; "a consumer can fetch and use the published archive" is what smoke would.
+
+## 2026-07-28 — the windows `smoke` job: gating the consumer flow, not just the build
+
+`ci.yml`'s `gate-windows` proves the archive builds, links and passes the suite — from **source**. It
+never fetches a published asset, so the flow that actually broke a downstream release (`imbhgo-fetch
+-print-env` into git-bash) stayed ungated. Added `windows/amd64` to `release.yml`'s existing `smoke`
+matrix, which is where that flow lives.
+
+- *Why a windows runner catches it and nothing else does.* Actions' `shell: bash` on `windows-latest` is
+  git-bash. That is the shell the regression was invisible in: `set VAR=…` there is the POSIX builtin
+  that assigns positional parameters, so it succeeds, exports nothing, and returns 0 — the `eval` cannot
+  fail. Running the documented one-liner in that shell *is* the gate.
+- *Made the failure legible.* The job now asserts `CGO_LDFLAGS` is non-empty right after the `eval` and
+  dumps `fetch-env.sh` if not, instead of letting an empty variable surface as a bewildering link error
+  three steps later — which is how the downstream consumer experienced it.
+- *The smoke program now opens a durable DB too.* It only ever opened in-memory, and in-memory is exactly
+  the subset that kept working on Windows while imbh#3 broke every on-disk open. A smoke that stops at
+  in-memory would have published that release green. Two lines, and it is the line that would have caught
+  it — worth remembering as a general shape: a smoke test that exercises only the portable subset gates
+  nothing about the platform-specific part.
+- *Validated before landing, as far as is possible off-Windows.* The step body was extracted verbatim from
+  the YAML and run on Linux against the published `v0.1.1` asset: fetch → `eval` → assertion → `go build`
+  → both opens, green. What that cannot cover is the git-bash dialect itself and the mingw link, which
+  only the real cell will exercise on the next tag.
+- *Two small platform details.* `go build -o smoke` writes a file named exactly that, and Windows will not
+  execute it without `.exe`, so the output name is now conditional — written as an `if`, not
+  `[ … ] && out=…`, which under `set -e` would abort the script when the condition is false. And the
+  runner needs MSYS2's mingw64 (the MSVCRT flavour matching `x86_64-pc-windows-gnu`) ahead of Strawberry
+  Perl's gcc on PATH, same as the CI gate.
+- *Still not promoted.* The release matrix keeps `best_effort: true` on the windows build cell. Its stated
+  promotion condition — a windows smoke job — is now met, so this is a deliberate one-line follow-up
+  rather than a missing prerequisite. While the flag stays, a failed windows build lets `publish` proceed
+  without the asset and this smoke job fails on the missing download: louder than the silence it replaces,
+  but failing fast at build is better.

@@ -26,8 +26,9 @@ for _, e := range logs {
 > is implemented and tested (46 tests under `-race`, including on-disk durability, concurrency-under-load,
 > and the admin / lifecycle / cursor-paging surface), and the memory-ownership protocol is leak-verified
 > two independent ways (an in-process counter and a Valgrind gate). **Dependencies are now external** —
-> imbh from crates.io and sable git-pinned — so it builds without local checkouts; still pending before
-> it is fully turnkey are CI and an `amd64` run (only `linux/arm64` has been exercised).
+> imbh from crates.io and sable git-pinned — so it builds without local checkouts, and CI
+> (`.github/workflows/ci.yml`) runs the whole gate on `linux/amd64` and `linux/arm64` for every push
+> and pull request.
 > See [Feature coverage](#feature-coverage) for what is and isn't exposed, and
 > [Limitations](#limitations--roadmap).
 
@@ -382,14 +383,18 @@ common fields.
 
 Honest current state:
 
-- **Packaging.** Consumed as external deps — imbh from crates.io (`0.1.0`) and sable git-pinned to its
-  fix commit — so no local checkouts are required to build. Still open: no CI yet, and the sable pin is a
-  branch commit (merge to `main` + re-pin for durability). Cold build is minutes; the static archive is large.
+- **Packaging.** Consumed as external deps — imbh from crates.io (`0.1.1`) and sable git-pinned to a
+  `main` commit — so no local checkouts are required to build. CI runs the standard gate on every push
+  and pull request; cold build is minutes; the static archive is large.
 - **Durability.** Covered by `TestDurabilityReopen` (ingest → flush → close → reopen the same path →
   query without re-ingest, exercising WAL replay / segment reload). Read-only opens are tested too.
 - **Concurrency.** Stress-tested by `TestConcurrentQueries` (48 goroutines × 60 iters, mixed SQL + typed
   queries against one shared `Db`, all under `-race`).
-- **Portability.** Only `linux/arm64` has been run (sable also certifies `amd64`).
+- **Portability.** `linux/{amd64,arm64}` and `windows/amd64` are gated in CI: full build + `go test
+  -race`, with the Windows leg building for `x86_64-pc-windows-gnu` and linking through the cgo
+  directives natively. Durable (on-disk) DBs need imbh `0.1.1` or newer on Windows — `0.1.0` failed
+  every on-disk open there (imbh#3). The Apple cells are compile-checked in CI (`cargo check` on a macOS
+  runner) and built on release tags, but the Go suite has never run there.
 - **Query surface.** SQL, typed queries, LGTM (PromQL / LogQL / TraceQL), cursor-paged logs (`QueryLogPage`
   + `QueryStats`), trace search, log volume, metric catalog / series / exemplars / instant, and attribute
   discovery are all exposed, alongside the read-only / builder-options / ops admin surface — see

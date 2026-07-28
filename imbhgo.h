@@ -15,18 +15,23 @@ extern "C" {
 /* Register handlers on sable (idempotent; call before sable's runtime is built). */
 void imbhgo_init(void);
 
+/* Every imbhgo_open* call takes an err_id: a caller-allocated id (same counter as query ids) under
+ * which the failure's cause is stashed, to be fetched with the OP_QUERY_ERROR byte-Call. These are
+ * direct C calls with only a u64 return, so without it a 0 handle carries no reason at all. Pass 0
+ * to discard the cause. */
+
 /* Open an ephemeral in-memory Db; returns its handle id (0 on error). */
-uint64_t imbhgo_open_memory(void);
+uint64_t imbhgo_open_memory(uint64_t err_id);
 
 /* Open an on-disk Db at the UTF-8 path [path, path+len); returns its handle id (0 on error). */
-uint64_t imbhgo_open(const uint8_t *path, size_t len);
+uint64_t imbhgo_open(const uint8_t *path, size_t len, uint64_t err_id);
 
 /* Open an existing on-disk Db read-only at [path, path+len); returns its handle id (0 on error).
  * Coexists with the single writer and other readers. */
-uint64_t imbhgo_open_read_only(const uint8_t *path, size_t len);
+uint64_t imbhgo_open_read_only(const uint8_t *path, size_t len, uint64_t err_id);
 
 /* Open a Db with JSON-encoded builder options at [opts, opts+len); returns its handle id (0 on error). */
-uint64_t imbhgo_open_opts(const uint8_t *opts, size_t len);
+uint64_t imbhgo_open_opts(const uint8_t *opts, size_t len, uint64_t err_id);
 
 /* Close (drop) a Db handle. */
 void imbhgo_close(uint64_t id);

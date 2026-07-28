@@ -131,6 +131,21 @@ fn store_query_error(query_id: u64, msg: &str) {
         .insert(query_id, msg.as_bytes().to_vec());
 }
 
+/// Record why an open failed under `err_id`, and return the 0 handle the ABI reports as "error".
+///
+/// The `imbhgo_open*` entry points are direct C calls, not sable ops, so they have only a `u64`
+/// return with no room for a message — every failure used to collapse to `0` and Go had to invent
+/// "open database at <path> failed", discarding the actual cause (wrong permissions, another writer
+/// holding `writer.lock`, an unsupported platform). Go therefore passes a caller-allocated id, drawn
+/// from the same counter as query ids so the two can share one slot map, and fetches the message
+/// through the existing `OP_QUERY_ERROR` byte-Call. `err_id == 0` means the caller does not want it.
+fn store_open_error(err_id: u64, e: impl std::fmt::Display) -> u64 {
+    if err_id != 0 {
+        store_query_error(err_id, &e.to_string());
+    }
+    0
+}
+
 /// Page metadata (`{next, stats}` JSON) for a paged log query, keyed by its query id. Stashed by the
 /// paging stream handler before it streams rows; fetched (and removed) by `OP_LOG_PAGE_META` once Go
 /// has drained the stream. Mirrors `QUERY_ERRORS`: the S-3 stream wire carries only batch handles, so
@@ -1801,29 +1816,31 @@ pub extern "C" fn imbhgo_init() {
     });
 }
 
-/// Open an ephemeral in-memory Db; returns its handle id (0 on error).
+/// Open an ephemeral in-memory Db; returns its handle id (0 on error, with the cause recorded under
+/// `err_id` — see [`store_open_error`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn imbhgo_open_memory() -> u64 {
+pub extern "C" fn imbhgo_open_memory(err_id: u64) -> u64 {
     match Db::in_memory().open() {
         Ok(db) => insert_db(db),
-        Err(_) => 0,
+        Err(e) => store_open_error(err_id, e),
     }
 }
 
-/// Open an on-disk Db at the UTF-8 path `[ptr,len)`; returns its handle id (0 on error).
+/// Open an on-disk Db at the UTF-8 path `[ptr,len)`; returns its handle id (0 on error, with the
+/// cause recorded under `err_id` — see [`store_open_error`]).
 ///
 /// # Safety
 /// `ptr` must point to at least `len` initialized bytes for the duration of the call (a valid UTF-8
 /// path buffer owned by the caller). The bytes are only read, not retained past return.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn imbhgo_open(ptr: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn imbhgo_open(ptr: *const u8, len: usize, err_id: u64) -> u64 {
     let path = match std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len) }) {
         Ok(p) => p,
-        Err(_) => return 0,
+        Err(e) => return store_open_error(err_id, format_args!("path is not valid UTF-8: {e}")),
     };
     match Db::builder(path).open() {
         Ok(db) => insert_db(db),
-        Err(_) => 0,
+        Err(e) => store_open_error(err_id, e),
     }
 }
 
@@ -1836,14 +1853,14 @@ pub unsafe extern "C" fn imbhgo_open(ptr: *const u8, len: usize) -> u64 {
 /// `ptr` must point to at least `len` initialized bytes for the duration of the call (a valid UTF-8
 /// path buffer owned by the caller). The bytes are only read, not retained past return.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn imbhgo_open_read_only(ptr: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn imbhgo_open_read_only(ptr: *const u8, len: usize, err_id: u64) -> u64 {
     let path = match std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len) }) {
         Ok(p) => p,
-        Err(_) => return 0,
+        Err(e) => return store_open_error(err_id, format_args!("path is not valid UTF-8: {e}")),
     };
     match Db::open_read_only(path) {
         Ok(db) => insert_db(db),
-        Err(_) => 0,
+        Err(e) => store_open_error(err_id, e),
     }
 }
 
@@ -1856,15 +1873,15 @@ pub unsafe extern "C" fn imbhgo_open_read_only(ptr: *const u8, len: usize) -> u6
 /// `ptr` must point to at least `len` initialized bytes for the duration of the call (a valid UTF-8
 /// JSON buffer owned by the caller). The bytes are only read, not retained past return.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn imbhgo_open_opts(ptr: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn imbhgo_open_opts(ptr: *const u8, len: usize, err_id: u64) -> u64 {
     let json = unsafe { std::slice::from_raw_parts(ptr, len) };
     let w: DbOptionsWire = match serde_json::from_slice(json) {
         Ok(w) => w,
-        Err(_) => return 0,
+        Err(e) => return store_open_error(err_id, format_args!("bad options JSON: {e}")),
     };
     match build_db(w) {
         Ok(db) => insert_db(db),
-        Err(_) => 0,
+        Err(e) => store_open_error(err_id, e),
     }
 }
 

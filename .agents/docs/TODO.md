@@ -91,7 +91,7 @@ upstream entry point and the wiring pattern.
       Fixed in `../sable` (null-for-empty in `sable_call_result`; non-scanned `uintptr` in
       `call.go::callResultBytes`). See JOURNAL 2026-07-24.
 - [~] External consumability: **deps done** ✅ 2026-07-24 — no local path deps remain.
-      - **imbh** consumed from crates.io `0.1.0`: `imbh`/`imbh-core`/`imbh-lgtm` pinned in lockstep so the
+      - **imbh** consumed from crates.io `0.1.1`: `imbh`/`imbh-core`/`imbh-lgtm` pinned in lockstep so the
         `imbh-core` instance unifies.
       - **sable** pinned as a git dep at the **`main`** commit `0c6fe56` (carries the memory-safety fix
         from PR #1 and the Apple-target port from PR #2): Rust
@@ -128,11 +128,17 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
       `SHA256SUMS` to `v0.1.0`, and **both `smoke` jobs passed**, proving a consumer can `go get` the module,
       `imbhgo-fetch` the prebuilt archive, and build + run with **no Rust toolchain**. Everything downstream
       of `Install zig` is now exercised. *(2026-07-26 "CD round 4" entry)*
-- [~] **CI + an amd64 run.** Partly closed 2026-07-26: amd64 is no longer unexercised — `linux/amd64`
-      glibc + musl **build** on real runners and the `smoke linux/amd64` consumer job passes. **Still open:**
-      no *test* CI at all. `go test -race ./...` and the Rust suite have still only ever run on this arm64
-      box; `release.yml` builds and publishes but never runs a test. A push/PR CI workflow running the
-      standard gate (ideally on both arches) is the remaining gap. *(LTM: build-toolchain-and-deps)*
+- [~] **CI + an amd64 run.** Workflow landed 2026-07-28: `.github/workflows/ci.yml` runs on push to `main`,
+      on every PR, and on `workflow_dispatch`. Three jobs — `lint` (no Rust: `gofmt`, vet/test of the
+      cgo-free `cmd/...` + `internal/...`, and a cross-compile of `imbhgo-fetch` for all five published
+      cells, so a formatting or pure-Go break reports in ~1 min), `gate` (matrix `linux/{amd64,arm64}`:
+      `cargo build --release` → `go build` → `go vet` → `go test -race` → the quickstart example →
+      `cargo clippy -D warnings`, with `if: ${{ !cancelled() }}` from `go vet` on so one failure does not
+      mask the rest), and `apple-check`. Every step was dry-run locally first and is green. **Still open:**
+      the first real-runner run — the same "validate end-to-end" bar `release.yml` had to clear. Watch for
+      runner disk (the host `target/` here is 6.8 GB) and cold-build wall clock (`timeout-minutes: 120`).
+      Caching is `Swatinem/rust-cache` with `save-if` restricted to `main`, so PRs restore but never evict.
+      *(LTM: build-toolchain-and-deps)*
 - [~] **`windows/amd64` — now builds; promote out of best-effort once it is link-tested.** Unblocked
       upstream 2026-07-26: sable landed the Windows fast crossing (its PR #7) and IOCP fd-fusion (#10), and
       now tests the **fast** staticlib for `x86_64-pc-windows-gnu` natively. Re-pinned here, the cell was
@@ -150,7 +156,47 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
       (`-shell sh|cmd|powershell`, POSIX default) — **but the fix is unreleased**, and consumers pin
       `imbhgo-fetch@v0.1.0`, so this needs a `v0.1.1` tag to reach anyone. A windows `smoke` job that runs
       the documented `eval "$(… -print-env)"` under the Actions `bash` shell would have caught it.
+      **A native windows gate landed 2026-07-28** as `gate-windows` in `ci.yml`, following sable's own
+      `verify-windows` recipe: build for `x86_64-pc-windows-gnu` on a `windows-latest` runner (gnu ABI,
+      because Go's cgo on Windows links with mingw gcc, not MSVC), hand the archive to cgo via
+      `CGO_LDFLAGS="-L$(pwd -W)/…"` — the documented consumer form, so `link_windows.go`'s `-limbhgo` and
+      Win32 lib set are exercised rather than bypassed — then `go build` (the link gate) → `go vet` →
+      `go test`. Note the "must union with sable's" worry is **already handled by sable**: under
+      `-tags sable_extern_lib` its `link_extern.go` contributes `-lkernel32 -lntdll -luserenv -lws2_32
+      -ldbghelp`, so the union is complete at the cgo level; what was never proven is that a real mingw
+      `ld` resolves the combined set, which is what this job settles. `-race` is `continue-on-error` for
+      now (sable reports the detector unavailable on the fused Windows path — this measures whether that
+      also holds here instead of assuming it). **Remaining:** promote the release-matrix cell out of
+      `best_effort: true` once this job is green, and add the windows `smoke` job for the `-print-env`
+      consumer flow, which this gate does *not* cover (it builds from source, never fetches an asset).
       *(2026-07-28 journal entry)*
+      **First results, and the gate immediately earned its keep.** The link works: `go build` and `go vet`
+      pass on Windows, so `link_windows.go` + sable's `link_extern.go` do resolve against the 340 MB COFF
+      archive under a real mingw `ld`. `-race` also works there — its `continue-on-error` "success" was
+      masking a run that failed identically to the plain one, with no race report — so **promote `-race`
+      to the hard step and drop the plain run** once the suite passes. What fails is only the **on-disk**
+      path, and it is **upstream**: `imbh-storage`'s `fsync_dir` (`wal.rs:315`) opens the DB directory as a
+      file, a Unix-only durability idiom that returns `Access is denied. (os error 5)` on Windows, so every
+      durable open dies at first-segment creation (`wal.rs:357`). Filed as
+      **[moriyoshi/imbh#3](https://github.com/moriyoshi/imbh/issues/3)** with the `#[cfg(windows)]` no-op
+      fix. **Fixed and re-pinned the same day**: imbh `ba448cd` took the no-op at *both* fsync sites (the
+      WAL's and a second one in the Parquet/manifest write path that this report had missed), published as
+      `0.1.1`; issue closed. No test skip was ever added — re-pinned to `0.1.1` instead (caret ranges meant
+      a `cargo update`, though the declared versions and every doc naming `0.1.0` were bumped too), and
+      `-race` was promoted to the hard step on the Windows leg at the same time. Local gate green against
+      the new pin. **The windows `smoke` job landed the same day** in `release.yml`: a
+      `windows-latest` cell in the existing smoke matrix, running the documented
+      `eval "$(imbhgo-fetch -print-env)"` under Actions' `bash` (which on a windows runner *is* git-bash —
+      the exact shell the `set VAR=…` regression was invisible in), then asserting `CGO_LDFLAGS` is
+      non-empty rather than letting an empty one surface as a link error three steps later. The smoke
+      program now also opens a **durable** DB, not just an in-memory one: in-memory is precisely the
+      subset that kept working on Windows while imbh#3 broke every on-disk open, so the old program would
+      have published that release green. Validated by extracting the step body verbatim and running it on
+      Linux against the published `v0.1.1` asset. **Remaining:** it has never run on a real tag (the next
+      release is its first), and the release-matrix cell still carries `best_effort: true` — now a
+      deliberate one-line follow-up rather than a missing prerequisite. Note the interaction: while that
+      flag stays, a failed windows *build* lets `publish` proceed without the asset, and this smoke job
+      then fails on the missing download — louder than today's silence, but fail-fast at build is better.
 - [ ] **Add `workflow_dispatch` to `release.yml`.** The `Resolve version` step already has a
       `github.event.inputs.version` branch, but the workflow declares only the `push`/`v*` trigger — so that
       branch is dead code and every re-validation costs a tag delete + re-push. Declaring the trigger makes the
@@ -164,12 +210,17 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
       the single place to read it from. Full gate re-run green at each step. Verify such claims with
       `gh api repos/moriyoshi/sable/compare/main...<rev>` rather than trusting prose.
       *(LTM: build-toolchain-and-deps, sable-ffi-integration)*
-- [ ] **Wire an Apple `cargo check` into imbh-go's own CI.** Upstream sable now has Darwin/Windows CI plus
-      emulation harnesses (its PRs #5/#6), but *this* repo has no guard: the Apple targets are only known to
-      build because they were checked by hand. `cargo check --target {aarch64,x86_64}-apple-darwin` needs
-      **no macOS SDK** (check never links), so a plain Linux job catches the next Linux-only-API regression
-      before it reaches a release tag. Real-hardware certification (`GOOS=darwin make abi-check`) stays an
-      upstream concern. *(2026-07-25 "CD fix round 3" entry)*
+- [~] **Wire an Apple `cargo check` into imbh-go's own CI.** Wired 2026-07-28 as the `apple-check` job in
+      `ci.yml` (both Apple triples), pending its first real-runner run. **The premise of this item was
+      wrong and the fix is worth remembering:** "a plain Linux job works because check never links" ignores
+      that `cargo check` still **runs build scripts**, and the C dependencies do compile. Measured here:
+      `cargo check --release --target x86_64-apple-darwin` on this Linux box fails in cc-rs building
+      `zstd-sys` — `cc: error: unrecognized command-line option '-arch'` — because cc-rs emits Apple flags
+      (`-arch x86_64`, `-mmacosx-version-min=10.7`) to the host gcc. It would need the zig-cc shim treatment
+      `scripts/build-release.sh` gives the cross cells. The job therefore runs on a `macos-14` runner, where
+      both triples compile natively with Xcode's clang and no cross setup at all (public repo, so the runner
+      is free). Real-hardware certification (`GOOS=darwin make abi-check`) stays an upstream concern.
+      *(2026-07-25 "CD fix round 3" entry; corrected 2026-07-28)*
 
 ### Deferred designs / revisit triggers
 
