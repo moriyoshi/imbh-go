@@ -120,6 +120,19 @@ go build -tags sable_extern_lib ./...
 (The per-platform cgo linker flags live in `link_linux.go` / `link_darwin.go` / `link_windows.go`;
 they default to `rust/target/release` for a local build, and defer to `CGO_LDFLAGS` for a prebuilt.)
 
+### Cutting a release (maintainers)
+
+```sh
+make release VERSION=v0.1.2   # rewrite the version everywhere, then build + vet + race-test
+```
+
+That rewrites `internal/release.Version` — which the release workflow requires the tag to match —
+along with the version references in this README and in `cmd/imbhgo-fetch`, then runs the local gate.
+It stops there and prints the remaining steps: commit, merge to `main`, then `git push origin
+v0.1.2`. Pushing the tag is what triggers `.github/workflows/release.yml`, which cross-builds every
+prebuilt cell, attaches the archives plus `SHA256SUMS` to the release, and smoke-tests the result as
+a consumer would.
+
 ## Quick start
 
 A complete runnable tour lives in [`examples/quickstart`](./examples/quickstart) — it ingests OTLP
