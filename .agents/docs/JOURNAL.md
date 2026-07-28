@@ -575,3 +575,38 @@ right one, and the answer was yes.
   covers the paths it walks.
 - *Not affected: the new open path.* `openFailure` always fetches, so a failed open cannot strand a
   slot; the only loss there is a transport failure on the fetch itself.
+
+## 2026-07-28 — what the windows gate found: an upstream Unix-only durability idiom (imbh#3)
+
+With the open error finally crossing the FFI boundary, the second `gate-windows` run named the cause in
+one line, on all five durable-DB tests:
+
+```
+imbhgo: open database at C:\Users\RUNNER~1\...\001: storage error: WAL dir fsync: Access is denied. (os error 5)
+```
+
+- *Root cause, upstream.* `imbh-storage`'s `fsync_dir` (`crates/imbh-storage/src/wal.rs:315`, identical in
+  the published `0.1.0` and `main` @ `bd8e359`) does `File::open(dir)` + `sync_all()` — the Unix idiom for
+  making a newly created file's *directory entry* durable. Windows refuses to open a directory as a file
+  without `FILE_FLAG_BACKUP_SEMANTICS`, so it returns `ERROR_ACCESS_DENIED`. The first call site is fresh-DB
+  first-segment creation (`wal.rs:357`), which is why *every* durable open fails and why it fails at 0.00s.
+  The other is rotation (`wal.rs:421`).
+- *Filed as [moriyoshi/imbh#3](https://github.com/moriyoshi/imbh/issues/3)* with the `#[cfg(windows)]`
+  no-op fix and the SQLite/LMDB/RocksDB precedent (NTFS journals the metadata; a directory handle cannot
+  be flushed with `FlushFileBuffers` even with the backup-semantics flag — flagged in the issue as the one
+  claim not verified here, since it decides no-op vs. flag).
+- *Why it survived to a release.* Every job in imbh's `ci.yml` is `ubuntu-latest`. A single
+  `windows-latest` `cargo test` on `imbh-storage` would have caught it at first-segment creation. The
+  triple itself builds fine — this is one Unix-shaped call, not a port.
+- *What this says about the gate.* It paid for itself on its first two runs: it proved the link (the thing
+  the standing TODO doubted) and found a genuine platform defect nobody knew about, in a cell we had been
+  *publishing* as `best_effort` for two releases. Note the ordering that made it cheap: run 1 said
+  "failed", run 2 named the cause — the error-surfacing fix in between is what turned an opaque red into a
+  one-line diagnosis, which is the argument for never letting an FFI boundary swallow an error.
+- *Also settled: `-race` works on Windows.* Its step-conclusion `success` was `continue-on-error` masking
+  an identical failure with no race report. Once the suite passes there, `-race` becomes the hard step and
+  the plain run goes — the note inherited from sable's `verify-windows` job does not apply to this binding.
+- *Status.* `windows/amd64` is in-memory-only until an imbh release carries the fix. Open decision, for the
+  user: skip the five durable-DB tests on Windows and merge the gate green now, or hold the PR until imbh
+  ships and we re-pin. Everything else on Windows passes: streaming, cancellation, backpressure, the Arrow
+  leak/UAF gates, the whole in-memory surface.

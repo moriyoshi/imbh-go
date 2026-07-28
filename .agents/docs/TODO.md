@@ -170,6 +170,19 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
       `best_effort: true` once this job is green, and add the windows `smoke` job for the `-print-env`
       consumer flow, which this gate does *not* cover (it builds from source, never fetches an asset).
       *(2026-07-28 journal entry)*
+      **First results, and the gate immediately earned its keep.** The link works: `go build` and `go vet`
+      pass on Windows, so `link_windows.go` + sable's `link_extern.go` do resolve against the 340 MB COFF
+      archive under a real mingw `ld`. `-race` also works there — its `continue-on-error` "success" was
+      masking a run that failed identically to the plain one, with no race report — so **promote `-race`
+      to the hard step and drop the plain run** once the suite passes. What fails is only the **on-disk**
+      path, and it is **upstream**: `imbh-storage`'s `fsync_dir` (`wal.rs:315`) opens the DB directory as a
+      file, a Unix-only durability idiom that returns `Access is denied. (os error 5)` on Windows, so every
+      durable open dies at first-segment creation (`wal.rs:357`). Filed as
+      **[moriyoshi/imbh#3](https://github.com/moriyoshi/imbh/issues/3)** with the `#[cfg(windows)]` no-op
+      fix. Until an imbh release carries it, `windows/amd64` is **in-memory only** — the five durable-DB
+      tests (`TestOpenReadOnly`, `TestOpenWith`, `TestOpsPassthrough`, `TestDurabilityReopen`,
+      `TestOpenErrorReportsCause`) cannot pass there. **Open decision:** skip those on Windows to merge the
+      gate green, or hold the PR until imbh ships the fix and we re-pin.
 - [ ] **Add `workflow_dispatch` to `release.yml`.** The `Resolve version` step already has a
       `github.event.inputs.version` branch, but the workflow declares only the `push`/`v*` trigger — so that
       branch is dead code and every re-validation costs a tag delete + re-push. Declaring the trigger makes the
