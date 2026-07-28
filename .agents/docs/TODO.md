@@ -184,10 +184,19 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
       `0.1.1`; issue closed. No test skip was ever added — re-pinned to `0.1.1` instead (caret ranges meant
       a `cargo update`, though the declared versions and every doc naming `0.1.0` were bumped too), and
       `-race` was promoted to the hard step on the Windows leg at the same time. Local gate green against
-      the new pin. **Remaining:** the windows `smoke` job (this gate builds from source, so the
-      `-print-env` consumer flow over a *published asset* is still untested), and the release-matrix cell
-      stays `best_effort: true` until that exists — the standing promotion condition was a smoke job, and
-      a source build is not one.
+      the new pin. **The windows `smoke` job landed the same day** in `release.yml`: a
+      `windows-latest` cell in the existing smoke matrix, running the documented
+      `eval "$(imbhgo-fetch -print-env)"` under Actions' `bash` (which on a windows runner *is* git-bash —
+      the exact shell the `set VAR=…` regression was invisible in), then asserting `CGO_LDFLAGS` is
+      non-empty rather than letting an empty one surface as a link error three steps later. The smoke
+      program now also opens a **durable** DB, not just an in-memory one: in-memory is precisely the
+      subset that kept working on Windows while imbh#3 broke every on-disk open, so the old program would
+      have published that release green. Validated by extracting the step body verbatim and running it on
+      Linux against the published `v0.1.1` asset. **Remaining:** it has never run on a real tag (the next
+      release is its first), and the release-matrix cell still carries `best_effort: true` — now a
+      deliberate one-line follow-up rather than a missing prerequisite. Note the interaction: while that
+      flag stays, a failed windows *build* lets `publish` proceed without the asset, and this smoke job
+      then fails on the missing download — louder than today's silence, but fail-fast at build is better.
 - [ ] **Add `workflow_dispatch` to `release.yml`.** The `Resolve version` step already has a
       `github.event.inputs.version` branch, but the workflow declares only the `push`/`v*` trigger — so that
       branch is dead code and every re-validation costs a tag delete + re-push. Declaring the trigger makes the

@@ -640,3 +640,37 @@ imbhgo: open database at C:\Users\RUNNER~1\...\001: storage error: WAL dir fsync
   never fetches a published asset, so the `-print-env` consumer flow that broke a downstream release
   remains untested. Worth keeping those two distinct: "the archive links and the suite passes" is what the
   gate proves; "a consumer can fetch and use the published archive" is what smoke would.
+
+## 2026-07-28 — the windows `smoke` job: gating the consumer flow, not just the build
+
+`ci.yml`'s `gate-windows` proves the archive builds, links and passes the suite — from **source**. It
+never fetches a published asset, so the flow that actually broke a downstream release (`imbhgo-fetch
+-print-env` into git-bash) stayed ungated. Added `windows/amd64` to `release.yml`'s existing `smoke`
+matrix, which is where that flow lives.
+
+- *Why a windows runner catches it and nothing else does.* Actions' `shell: bash` on `windows-latest` is
+  git-bash. That is the shell the regression was invisible in: `set VAR=…` there is the POSIX builtin
+  that assigns positional parameters, so it succeeds, exports nothing, and returns 0 — the `eval` cannot
+  fail. Running the documented one-liner in that shell *is* the gate.
+- *Made the failure legible.* The job now asserts `CGO_LDFLAGS` is non-empty right after the `eval` and
+  dumps `fetch-env.sh` if not, instead of letting an empty variable surface as a bewildering link error
+  three steps later — which is how the downstream consumer experienced it.
+- *The smoke program now opens a durable DB too.* It only ever opened in-memory, and in-memory is exactly
+  the subset that kept working on Windows while imbh#3 broke every on-disk open. A smoke that stops at
+  in-memory would have published that release green. Two lines, and it is the line that would have caught
+  it — worth remembering as a general shape: a smoke test that exercises only the portable subset gates
+  nothing about the platform-specific part.
+- *Validated before landing, as far as is possible off-Windows.* The step body was extracted verbatim from
+  the YAML and run on Linux against the published `v0.1.1` asset: fetch → `eval` → assertion → `go build`
+  → both opens, green. What that cannot cover is the git-bash dialect itself and the mingw link, which
+  only the real cell will exercise on the next tag.
+- *Two small platform details.* `go build -o smoke` writes a file named exactly that, and Windows will not
+  execute it without `.exe`, so the output name is now conditional — written as an `if`, not
+  `[ … ] && out=…`, which under `set -e` would abort the script when the condition is false. And the
+  runner needs MSYS2's mingw64 (the MSVCRT flavour matching `x86_64-pc-windows-gnu`) ahead of Strawberry
+  Perl's gcc on PATH, same as the CI gate.
+- *Still not promoted.* The release matrix keeps `best_effort: true` on the windows build cell. Its stated
+  promotion condition — a windows smoke job — is now met, so this is a deliberate one-line follow-up
+  rather than a missing prerequisite. While the flag stays, a failed windows build lets `publish` proceed
+  without the asset and this smoke job fails on the missing download: louder than the silence it replaces,
+  but failing fast at build is better.

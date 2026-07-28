@@ -138,11 +138,34 @@ jobs:
         include:
           - { goos: linux, goarch: amd64, runner: ubuntu-latest }
           - { goos: linux, goarch: arm64, runner: ubuntu-24.04-arm }
+          # windows/amd64 is here for a failure this repo has already shipped: a consumer's release leg
+          # broke because `imbhgo-fetch -print-env` chose its shell dialect from the *target* GOOS and
+          # emitted cmd.exe's `set VAR=…` into git-bash, where `set` is the POSIX builtin that assigns
+          # positional parameters — it succeeds, exports nothing, and returns 0. The download had worked;
+          # the next line failed on an empty CGO_LDFLAGS. `shell: bash` on a windows runner IS git-bash,
+          # so running the documented `eval "$(… -print-env)"` here is that exact regression gate. It also
+          # covers what ci.yml's gate-windows cannot: that leg builds the archive from source, while this
+          # one consumes the *published* asset the way a consumer does.
+          - { goos: windows, goarch: amd64, runner: windows-latest }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ env.GO_VERSION }}
+
+      # cgo on Windows links with mingw gcc, and the published archive is built for
+      # x86_64-pc-windows-gnu — the MSVCRT mingw flavour, i.e. C:\msys64\mingw64, not ucrt64. The image
+      # also ships Strawberry Perl's gcc, which must not win. Same reasoning as ci.yml's gate-windows;
+      # a consumer on Windows needs the same toolchain, which is why the README documents it.
+      - name: Use MSYS2's mingw-w64 gcc
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [ -x /c/msys64/mingw64/bin/gcc.exe ]; then
+            echo 'C:\msys64\mingw64\bin' >> "$GITHUB_PATH"
+          else
+            echo "::warning::C:\\msys64\\mingw64 not found; falling back to the gcc already on PATH"
+          fi
       # Deliberately NO Rust toolchain and NO checkout of rust/target: this job proves a consumer can
       # fetch the prebuilt archive and build against it with only Go installed.
       - name: Fetch prebuilt + build a consumer
@@ -181,21 +204,47 @@ jobs:
           retry go get "github.com/moriyoshi/imbh-go@${v}"
           retry fetch_env
           eval "$(cat fetch-env.sh)"
+
+          # Assert what actually broke downstream: `set VAR=…` evaluated in git-bash succeeds, exports
+          # nothing, and returns 0, so the eval above cannot fail — the symptom was an empty variable and
+          # a bewildering link error three steps later. Check it directly, and print the script we ran.
+          if [ -z "${CGO_LDFLAGS:-}" ]; then
+            echo "::error::imbhgo-fetch printed no usable CGO_LDFLAGS for this shell" >&2
+            echo "---- fetch-env.sh ----" >&2; cat fetch-env.sh >&2
+            exit 1
+          fi
+
           cat > main.go <<'EOF'
           package main
           import (
-              "context"
               "fmt"
+              "os"
               imbhgo "github.com/moriyoshi/imbh-go"
           )
           func main() {
               db, err := imbhgo.OpenInMemory()
               if err != nil { panic(err) }
-              defer db.Close()
-              _ = context.Background()
+              db.Close()
               fmt.Println("opened in-memory imbh DB via prebuilt libimbhgo.a")
+
+              // Also open a DURABLE db. The in-memory open above is exactly the subset that kept working
+              // on Windows while every on-disk open failed (imbh#3: the WAL's directory fsync opened a
+              // directory as a file, which Windows refuses), so a smoke that stops at in-memory would
+              // have published that release green. This is the line that would have caught it.
+              dir, err := os.MkdirTemp("", "imbhgo-smoke")
+              if err != nil { panic(err) }
+              defer os.RemoveAll(dir)
+              ddb, err := imbhgo.Open(dir)
+              if err != nil { panic(err) }
+              ddb.Close()
+              fmt.Println("opened on-disk imbh DB at", dir)
           }
           EOF
           go mod tidy
-          go build -tags sable_extern_lib -o smoke .
-          ./smoke
+
+          # `go build -o smoke` writes a file named exactly that, and Windows will not execute it
+          # without the extension.
+          out=smoke
+          if [ "${RUNNER_OS:-}" = "Windows" ]; then out=smoke.exe; fi
+          go build -tags sable_extern_lib -o "$out" .
+          "./$out"
