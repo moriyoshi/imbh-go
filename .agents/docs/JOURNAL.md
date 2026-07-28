@@ -422,3 +422,51 @@ expected (see the standing windows TODO), but three lines earlier, in our own fe
   this in one step, and would still catch the link-time failure the TODO predicts. Note also that the fix
   reaches nobody until a **`v0.1.1`** tag exists — consumers pin `imbhgo-fetch@v0.1.0`, and a module-proxy
   pin is immune to fixes on `main`.
+
+## 2026-07-28 — CI at last: `ci.yml` runs the standard gate on both Linux arches (+ an Apple compile guard)
+
+Until today the repo had CD but no CI: `release.yml` builds six cells and publishes them on a tag, but it
+never runs a test, so `go test -race ./...` and clippy had only ever run on one arm64 developer box. Added
+`.github/workflows/ci.yml` (push to `main`, every PR, `workflow_dispatch`; `concurrency` cancels superseded
+PR runs but never a `main` run).
+
+- *Shape.* Three jobs. `lint` needs neither Rust nor the 450 MB archive — `gofmt -l`, `go vet` + `go test
+  -race` over the deliberately cgo-free `./cmd/...` and `./internal/...`, and a `CGO_ENABLED=0`
+  cross-compile of `imbhgo-fetch` for all five published cells — so a formatting or pure-Go break reports
+  in about a minute instead of after a DataFusion build. `gate` is the real thing on `linux/amd64`
+  (`ubuntu-latest`) and `linux/arm64` (`ubuntu-24.04-arm`): `cargo build --release` (host build, no
+  `--target`, so the archive lands where `link_linux.go`'s `-L${SRCDIR}/rust/target/release` already looks
+  and cgo needs no `CGO_LDFLAGS`) → `go build` → `go vet` → `go test -race` → `go run ./examples/quickstart`
+  → `cargo clippy -- -D warnings`. `apple-check` is compile-only for the two Apple triples.
+- *`if: ${{ !cancelled() }}` from `go vet` onward.* One failing check must not hide the others; a single run
+  should report vet + tests + clippy together rather than one per push. Clippy is deliberately **last**: it
+  reaches the workspace crate through `RUSTC_WORKSPACE_WRAPPER`, so only `rust/src/lib.rs` recompiles once
+  the release build above is warm, and its `-D warnings` failure never costs us the test signal.
+- *No `cargo test`, deliberately.* `rust/` carries no `#[test]` and its only target is a `staticlib` whose
+  sable half resolves Go runtime symbols; a test harness would have nothing to assert and nothing to link
+  against. The Rust code is covered through the Go suite.
+- *No `cargo fmt --check`, and this is a real finding.* `rust/src/lib.rs` is **not** rustfmt-clean at the
+  default `max_width = 100` — it is written at roughly 110 and rustfmt wants to break `split_json_req`,
+  the `sable::register(OP_*, …)` block, the `let`-chains, and more. Adding the check would have made CI red
+  on day one. Landing it later means either accepting a large reformat diff or committing a `rustfmt.toml`
+  with the wider width; either is a deliberate decision, not a drive-by.
+- *The Apple guard runs on macOS, and the old TODO's premise was wrong.* The standing item claimed `cargo
+  check --target {aarch64,x86_64}-apple-darwin` "needs no macOS SDK (check never links), so a plain Linux
+  job works". Check never links, but it **does run build scripts** — and those compile C. Measured on this
+  Linux box: `cargo check --release --target x86_64-apple-darwin` dies in cc-rs building `zstd-sys` with
+  `cc: error: unrecognized command-line option '-arch'` (cc-rs hands the host gcc `-arch x86_64
+  -mmacosx-version-min=10.7`). Making it work on Linux would need the same zig-cc shims
+  `scripts/build-release.sh` carries. A `macos-14` runner compiles both triples natively with Xcode's clang
+  and no cross setup — and the repo is public, so the runner is free. Note the aarch64 case would have
+  hidden this: `rust/target/aarch64-apple-darwin/` already existed locally with cached build-script output,
+  so only the untouched x86_64 triple exposed the failure. Pick the cold cell when validating a cross build.
+- *Caching.* `Swatinem/rust-cache` with `workspaces: rust` and `save-if: github.ref == 'refs/heads/main'`,
+  so PR branches restore main's warm entry but can never evict it (repo-wide cache is 10 GB and this tree
+  is large: the host `rust/target/release` here is 6.8 GB, each `--target` cell about 1.6 GB).
+- *Local dry-run before landing.* Every step was executed on this box first: `gofmt -l .` clean, `go vet`
+  clean, the cgo-free tests pass, all five cross-compiles of `imbhgo-fetch` build, `go test -race -count=1
+  ./...` green in 8.6 s wall (the Rust build, not the suite, is what makes CI slow), the quickstart prints
+  its three sections, and `cargo clippy --release -- -D warnings` is clean.
+- *Still open.* The first real-runner run is the validation bar (same one `release.yml` had to clear) —
+  watch runner disk and cold-build wall clock (`timeout-minutes: 120`). And `windows/amd64` is still
+  build-only and best-effort: the smoke job the previous entry argued for is not part of this change.

@@ -1,0 +1,171 @@
+# Run the standard local gate (the one CLAUDE.md prescribes) on every push and pull request, so a
+# regression is caught before a release tag rather than by `release.yml`, which builds and publishes
+# but never runs a test.
+#
+# Until this existed, `go test -race ./...` and the Rust side had only ever run on one developer's
+# arm64 box; `linux/amd64` was exercised as a *build* by the release matrix and nothing more. Hence
+# the two-arch gate below: amd64 and arm64 run the identical gate, so an arch-specific FFI or
+# alignment bug in the Arrow handoff surfaces here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One in-flight run per ref. PR pushes supersede their predecessor; pushes to main are never
+# cancelled, so main always ends with a conclusive result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GO_VERSION: "1.26.4" # must match go.mod's toolchain pin (//go:linkname into Go internals)
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Everything that needs neither the Rust toolchain nor the 450 MB archive, so a formatting or
+  # pure-Go mistake reports in ~1 minute instead of after a full DataFusion build.
+  lint:
+    name: lint (no Rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -w needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # cmd/imbhgo-fetch and internal/release are deliberately cgo-free (the fetcher must build and
+      # run *before* the archive it fetches exists), so they can be vetted and tested without Rust.
+      - name: vet + test the cgo-free packages
+        run: |
+          go vet ./cmd/... ./internal/...
+          go test -race ./cmd/... ./internal/...
+
+      # The fetch tool is what a consumer runs on a machine with only Go. It must at least compile
+      # for every cell release.yml publishes an archive for — including windows/amd64, where a
+      # consumer's release leg has already been broken once (the -print-env shell-dialect bug).
+      - name: cross-compile the fetch tool for every published cell
+        run: |
+          set -euo pipefail
+          for cell in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            echo ">> ${cell}"
+            GOOS="${cell%/*}" GOARCH="${cell#*/}" CGO_ENABLED=0 go build -o /dev/null ./cmd/imbhgo-fetch
+          done
+
+  # The full gate: the combined staticlib, clippy, then build/vet/test the Go binding against it.
+  gate:
+    name: gate linux/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    # A cold build pulls and compiles the whole DataFusion tree; the cache below usually makes it
+    # far shorter, but the uncached case must still fit.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goarch: amd64, runner: ubuntu-latest }
+          - { goarch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch @ 2026-07-16
+        with:
+          # Explicit: pinning the action by SHA means the ref no longer names a channel.
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust
+          # Only main writes the cache. PR branches restore from it but never save, so a PR cannot
+          # evict main's warm entry (repo-wide cache is 10 GB and this tree is not small).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Host build (no --target), so the archive lands where link_{linux,darwin,windows}.go's
+      # -L${SRCDIR}/rust/target/release expects it and cgo needs no CGO_LDFLAGS.
+      - name: cargo build --release
+        run: cargo build --release --manifest-path rust/Cargo.toml
+
+      - name: go build
+        run: go build -tags sable_extern_lib ./...
+
+      # `!cancelled()` from here on: one failing check must not hide the others, so a single run
+      # reports vet + tests + clippy together instead of one per push.
+      - name: go vet
+        if: ${{ !cancelled() }}
+        run: go vet -tags sable_extern_lib ./...
+
+      # -race is mandatory, not optional: the load-bearing tests are the leak / use-after-free gates
+      # around the two-free Arrow ownership protocol (full drain, early close with a buffered batch,
+      # shutdown with an open cursor).
+      - name: go test -race
+        if: ${{ !cancelled() }}
+        run: go test -tags sable_extern_lib -race ./...
+
+      # The README's runnable tour is user-facing; keep it from rotting.
+      - name: run the quickstart example
+        if: ${{ !cancelled() }}
+        run: go run -tags sable_extern_lib ./examples/quickstart
+
+      # Last, because it is independent of the Go side and cheap once the build above is warm:
+      # clippy reaches the workspace crate via RUSTC_WORKSPACE_WRAPPER, so only rust/src/lib.rs
+      # recompiles — the dependency artifacts are reused.
+      #
+      # Deliberately no `cargo test`: rust/ carries no #[test], and its only target is a staticlib
+      # whose sable half resolves Go runtime symbols, so a test harness would have nothing to assert
+      # and nothing to link against. The Rust code is covered through the Go suite above.
+      - name: cargo clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --release --manifest-path rust/Cargo.toml -- -D warnings
+
+  # Compile-only guard for the Apple cells. release.yml builds them, but only on a tag — by then a
+  # Linux-only API creeping into rust/ (or into a bumped sable/imbh pin) has already broken the
+  # release. This runs on macOS rather than cross-checking from Linux for a concrete reason: `cargo
+  # check` still runs build scripts, and the C dependencies (zstd-sys) then need an Apple-targeting
+  # C compiler — a plain Linux `cargo check --target x86_64-apple-darwin` fails in cc-rs with
+  # "unrecognized command-line option '-arch'". On a macOS runner both triples compile natively with
+  # Xcode's clang and no cross setup at all.
+  apple-check:
+    name: cargo check (apple)
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch @ 2026-07-16
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo check aarch64-apple-darwin
+        run: cargo check --release --manifest-path rust/Cargo.toml --target aarch64-apple-darwin
+
+      - name: cargo check x86_64-apple-darwin
+        if: ${{ !cancelled() }}
+        run: cargo check --release --manifest-path rust/Cargo.toml --target x86_64-apple-darwin
