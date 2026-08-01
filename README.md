@@ -328,6 +328,7 @@ works but through `db.Query(ctx, sql)` rather than a dedicated method.
 | `flush` (seal buffer → segment) | ✅ `Flush` | |
 | Read-only open (`open_read_only`) | ✅ `OpenReadOnly` | many-reader / single-writer; writes on the handle are rejected |
 | Builder options (memory budget, WAL mode, retention, compression, maintenance, promote) | ✅ `OpenWith(DbOptions)` | host-runtime-`Handle` variants (async ingest, runtime-driven maintenance) deferred |
+| Flush policy (`DbBuilder::flush`, imbh 0.2.0) | ✅ `DbOptions.Flush` | imbh's spec string (`"interval=5s,wal=64MiB"`, or `"manual"`); needs `MaintenanceBackgroundNs` set, since that is what runs the scheduler |
 | Ops: `stats`, `compact`, `maintain`, `snapshot`, `segments`, `segment_files`, `durable_through`, `export` (Arrow IPC) | ✅ `Stats` / `Compact` / `Maintain` / `Snapshot` / `Segments` / `SegmentFiles` / `DurableThrough` / `Export` (+`ExportRecords`) | writer-only ops error on a read-only handle |
 
 ### Query surfaces
