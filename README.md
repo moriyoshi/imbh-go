@@ -79,8 +79,8 @@ prebuilt `libimbhgo.a` for your platform from the matching GitHub release, verif
 prints the `CGO_LDFLAGS` to link against it:
 
 ```sh
-go get github.com/moriyoshi/imbh-go@v0.2.0
-eval "$(go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.2.0 -print-env)"
+go get github.com/moriyoshi/imbh-go@v0.3.0
+eval "$(go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.3.0 -print-env)"
 go build -tags sable_extern_lib ./...
 ```
 
@@ -91,11 +91,11 @@ go build -tags sable_extern_lib ./...
   git-bash / MSYS2. From a native Windows shell, ask for its dialect explicitly:
 
   ```bat
-  for /f "delims=" %i in ('go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.2.0 -print-env -shell cmd') do @%i
+  for /f "delims=" %i in ('go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.3.0 -print-env -shell cmd') do @%i
   ```
 
   ```powershell
-  go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.2.0 -print-env -shell powershell | Invoke-Expression
+  go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.3.0 -print-env -shell powershell | Invoke-Expression
   ```
 - The fetch tool caches the archive under your user cache dir (override with `-dest`) and re-detects
   glibc vs musl on Linux automatically (override with `-libc`).
@@ -244,6 +244,12 @@ red, _ := db.QuerySpanMetricsTyped(ctx, imbhgo.SpanMetricsQuery{
 
 Typed queries collect eagerly (they materialize the result), so prefer them for bounded results
 (a limited page, a fixed-step range) and use `Query(ctx, sql)` for large, unbounded scans.
+
+Every `GroupBy` / attribute predicate (`LogVolumeBy`, `MetricQuery.GroupBy`, `SpanMetricsQuery.GroupBy`,
+`LogQuery.AttrEq` and friends) also accepts `"service.name"` — or its column spelling `"service"` — even
+though service is a *resource* attribute lifted into a built-in column rather than a record attribute.
+Requires imbh 0.3.0: earlier versions resolved the key against the record attributes, silently
+collapsing a per-service breakdown into one empty-labelled series with the counts merged.
 
 ### LGTM query languages (PromQL / LogQL / TraceQL)
 

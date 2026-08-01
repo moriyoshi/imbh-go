@@ -176,6 +176,10 @@ func (db *DB) LogVolume(ctx context.Context, q LogQuery, stepNs int64) ([]Volume
 
 // LogVolumeBy is LogVolume broken down by the given attribute keys — counts per (step-bucket, label
 // set), each bucket carrying its Labels as canonical JSON. Empty groupBy is equivalent to LogVolume.
+//
+// A key may name a record attribute or the service: "service.name" (the OTel resource key) and
+// "service" (the column it is lifted into at ingest) both split per service. Requires imbh 0.3.0 —
+// before that, either spelling silently collapsed the breakdown into one empty-labelled bucket set.
 func (db *DB) LogVolumeBy(ctx context.Context, q LogQuery, stepNs int64, groupBy []string) ([]VolumeBucket, error) {
 	b, err := json.Marshal(logVolumeRequest{LogQuery: q, StepNs: stepNs, GroupBy: groupBy})
 	if err != nil {
