@@ -15,23 +15,26 @@ crate-type = ["staticlib"]
 sable = { git = "https://github.com/moriyoshi/sable", rev = "0c6fe56" }
 # imbh facade with the Arrow C Data Interface (cdata), protobuf query inputs (proto), full-text
 # search (search), and serde (for the opaque PageCursor round-trip). This is the heavy dependency
-# (the DataFusion tree). Consumed from crates.io (published 0.2.0); see also ../../imbh for local dev.
-# 0.2.0 adds the flush scheduler (`DbBuilder::flush(FlushPolicy)`, surfaced here as the `flush` spec
-# string in `DbOptionsWire`) and makes `WalMode::Interval(d)` actually honored, since it is that
-# scheduler's clock that fsyncs the WAL. Both are opt-in: leaving `flush` unset keeps 0.1.x behavior
-# (seal on the `Maintenance` interval and at the budget-derived byte threshold). 0.1.1 before it
+# (the DataFusion tree). Consumed from crates.io (published 0.3.0); see also ../../imbh for local dev.
+# 0.3.0 makes `service.name` (and `service`) resolve to the built-in `service` column in every typed
+# group-by / attribute filter, instead of to an always-NULL `json_get_str(attributes, …)`; the
+# binding's `LogVolumeBy` / metric `GroupBy` / span-metrics paths inherit the fix with no glue change.
+# 0.2.0 before it added the flush scheduler (`DbBuilder::flush(FlushPolicy)`, surfaced here as the
+# `flush` spec string in `DbOptionsWire`) and made `WalMode::Interval(d)` actually honored, since it
+# is that scheduler's clock that fsyncs the WAL. Both are opt-in: leaving `flush` unset keeps 0.1.x
+# behavior (seal on the `Maintenance` interval and at the budget-derived byte threshold). 0.1.1
 # carried the Windows on-disk fix (imbh#3): fsync_dir is a no-op there, because opening a directory
 # as a File returns ERROR_ACCESS_DENIED and every durable open died at WAL segment creation.
-imbh = { version = "0.2.0", features = ["cdata", "proto", "search", "serde"] }
+imbh = { version = "0.3.0", features = ["cdata", "proto", "search", "serde"] }
 # imbh-core for the shared canonical-JSON encoder (`canonical_json_object`), used to render a
 # metric series' `Attributes` label set as its canonical string. MUST resolve to the SAME version as
-# imbh's own imbh-core dep (0.2.0) so the crate instance (and thus `imbh::Attributes` ==
+# imbh's own imbh-core dep (0.3.0) so the crate instance (and thus `imbh::Attributes` ==
 # `imbh_core::Attributes`) unifies — keep this pin in lockstep with the imbh version above.
-imbh-core = { version = "0.2.0" }
+imbh-core = { version = "0.3.0" }
 # LGTM-stack query languages (PromQL / LogQL / TraceQL) executed against imbh::Db (the `source`
-# feature pulls the execution traits, which depend on the imbh facade). Same 0.2.0 as imbh so its
+# feature pulls the execution traits, which depend on the imbh facade). Same 0.3.0 as imbh so its
 # transitive imbh dep unifies with ours.
-imbh-lgtm = { version = "0.2.0", features = ["source"] }
+imbh-lgtm = { version = "0.3.0", features = ["source"] }
 # StreamExt for driving imbh's SendableRecordBatchStream in the stream handler.
 futures = "0.3"
 # Native (JSON) typed-query decoding: Go marshals the query struct, Rust maps it onto imbh's builders.

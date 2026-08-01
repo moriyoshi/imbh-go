@@ -90,7 +90,10 @@ func (db *DB) CountLogs(ctx context.Context, q LogQuery) (uint64, error) {
 }
 
 // MetricQuery is a metric range query over a scalar metric (gauge or sum). Times are Unix nanoseconds;
-// Step is the resampling interval in nanoseconds. GroupBy names attribute keys to split series on.
+// Step is the resampling interval in nanoseconds. GroupBy names attribute keys to split series on —
+// a record attribute, or the service under either spelling ("service.name" / "service"), which imbh
+// 0.3.0 resolves to the built-in service column (earlier versions merged every service into one
+// empty-labelled series). The same holds for LogQuery's attribute predicates and SpanMetricsQuery.
 type MetricQuery struct {
 	Metric  string   `json:"metric"`             // metric name
 	Sum     bool     `json:"sum,omitempty"`      // false = gauge (default), true = sum

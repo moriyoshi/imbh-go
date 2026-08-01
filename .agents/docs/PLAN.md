@@ -208,14 +208,14 @@ The op space has since grown to `1..33` — LGTM (10–12), `get_trace` (13), ra
 crate-type = ["staticlib"]
 [dependencies]
 sable     = { git = "https://github.com/moriyoshi/sable", rev = "545d04f", default-features = false }  # rlib; no `demo`
-imbh      = { version = "0.2.0", features = ["cdata", "proto", "search", "serde"] }  # crates.io
-imbh-core = "0.2.0"                                               # direct + lockstep (canonical_json_object / to_hex)
-imbh-lgtm = { version = "0.2.0", features = ["source"] }          # PromQL/LogQL/TraceQL
+imbh      = { version = "0.3.0", features = ["cdata", "proto", "search", "serde"] }  # crates.io
+imbh-core = "0.3.0"                                               # direct + lockstep (canonical_json_object / to_hex)
+imbh-lgtm = { version = "0.3.0", features = ["source"] }          # PromQL/LogQL/TraceQL
 tokio   = { version = "1", features = ["rt", "sync"] }            # match imbh's tokio
 futures = "0.3"                                                    # StreamExt for the producer loop
 ```
 
-The three `imbh*` crates are pinned in **lockstep** at `0.2.0` so the direct `imbh-core` resolves to the same instance as imbh's transitive one (else `imbh::Attributes != imbh_core::Attributes` in the glue). sable is a **git dep** (not published) at the memory-safety-fix commit; the Go side uses a **direct** `require github.com/moriyoshi/sable <pseudo-version>` with **no** `replace` (a `replace` is ignored for downstream consumers). Local `../imbh` / `../sable` checkouts remain for co-development; re-pin (bump the version / `rev` + pseudo-version) rather than reverting to a path dep.
+The three `imbh*` crates are pinned in **lockstep** at `0.3.0` so the direct `imbh-core` resolves to the same instance as imbh's transitive one (else `imbh::Attributes != imbh_core::Attributes` in the glue). sable is a **git dep** (not published) at the memory-safety-fix commit; the Go side uses a **direct** `require github.com/moriyoshi/sable <pseudo-version>` with **no** `replace` (a `replace` is ignored for downstream consumers). Local `../imbh` / `../sable` checkouts remain for co-development; re-pin (bump the version / `rev` + pseudo-version) rather than reverting to a path dep.
 
 Go build: `#include "imbhgo.h"` (hand-written), compiled `-tags sable_extern_lib`; the `Makefile` builds `libimbhgo.a` then `CGO_LDFLAGS="-L$(PWD)/rust/target/release -limbhgo" go test -tags sable_extern_lib -race ./...`. sable's `link_extern.go` supplies base system libs. **Toolchain pins carry over**: `go.mod` mirrors sable's `go1.26.4` pin (ABI certified per `(Go × arch)`; sable so `sable.Init()` does not fail-closed) and the `-tags sable_portable` fallback. **Init ordering**: `imbhgo_init()` must register before `sable::Init`; it is idempotent (a `Once`) and called from the Go `init()` before any sable entry point. Explicit registration, not `#[ctor]` — deterministic.
 

@@ -729,3 +729,52 @@ version bump alone compiled, passed clippy, and passed the full `-race` suite un
   to a host implementing its own scheduler. Left for when something needs it.
 - *imbh-go's own release version is untouched.* `internal/release.Version` stays `v0.1.1`; that axis is the
   binding's published asset tag, not the dependency pin, and bumping it is a release decision.
+
+## 2026-08-01 — imbh 0.3.0 re-pinned: `service.name` became a usable group-by / filter key
+
+Followed the upstream `v0.3.0` release (tagged and published to crates.io 2026-08-01). `imbh`/`imbh-core`/
+`imbh-lgtm` move together to `0.3.0`, keeping the lockstep that makes `imbh-core` a single crate instance;
+the whole `imbh*` tree in `rust/Cargo.lock` resolves to `0.3.0` (`imbh-index`, `-otlp`, `-proto`, `-query`,
+`-storage` came along transitively). **No signature changed** — the bump alone compiled, and clippy and the
+full `-race` suite passed with no glue edit. What changed is *behavior*, and it is worth a gate.
+
+- *The fix, in binding terms.* `service.name` is an OTel **resource** attribute that imbh lifts into the
+  built-in `service` column at ingest; it is never a record `attributes` entry. Every typed builder funnels
+  a group/filter key through `SqlParams::attr_field`, which until 0.3.0 had only two branches — promoted
+  dictionary column, else `json_get_str(attributes, $key)`. `service.name` took the second and evaluated to
+  NULL on every row. 0.3.0 adds a `builtin_column` branch ahead of both, resolving `service.name` *and*
+  `service` to `CAST(service AS VARCHAR)`. Fixing the funnel fixes every caller, so the binding inherits it
+  across `LogVolumeBy`, `MetricQuery.GroupBy`, `SpanMetricsQuery.GroupBy`, and the whole `LogQuery` attribute
+  predicate set (`AttrEq`, `AttrExists`, the numeric/regex/set variants) with zero changes in `rust/src`.
+- *Why the old behavior was worth a release.* Both failure modes were **silent**. A filter on `service.name`
+  matched nothing; a group-by collapsed every service into one `{"service.name":""}` series with the counts
+  merged — and a NULL attribute is a legitimate result, so nothing anywhere could tell that apart from "no
+  such attribute". Upstream's own MCP tool descriptions had been written around the bug ("to split by
+  service, call once per service"), which is how a data bug becomes a documented API constraint.
+- *The gate needs two services.* New `service_name_test.go` pins all three group-by surfaces plus the filter
+  path. Every case ingests **two** services deliberately: a single-service fixture cannot distinguish a
+  working breakdown from the collapsed one — both yield one series with the full count — which is exactly
+  why upstream's original smoke test missed this. Verified against the old pin by temporarily downgrading to
+  `0.2.0` and rebuilding: all three fail, and they fail *descriptively* (`map[{"service.name":""}:3]`,
+  `series by service.name = map[:30]` — the two gauges averaged into one series — and `map[:3]` for RED).
+  Both spellings are asserted on the log path, since the column name is as legitimate an input as the OTel
+  key and they resolve through the same new branch.
+- *`CountLogs` is the right probe for the filter half.* It is a `count(*)` over the filter with no row
+  materialization, so `AttrEq{"service.name":"cart"} == 2` and `AttrExists{"service.name"} == 3` state the
+  claim (rows matched, rows seen as having the key) without threading a `Rows` drain through the assertion.
+- *Ordering note carried from upstream.* The built-in branch deliberately wins over a configured `Promote`.
+  A promoted key cannot shadow `service` (`promoted_columns` drops reserved names), and a promoted
+  `service.name` column would be materialized over record `attributes` and be all-NULL for the same reason.
+  So a `DbOptions.Promote` containing `service.name` is now harmless rather than actively wrong — worth
+  knowing if a caller added it as a workaround for the old behavior.
+- *Not followed.* 0.3.0's remaining headline items sit downstream of the library and do not reach this
+  binding: the new `imbh-mcp` crate with MCP over stdio (`imbh-tui --mcp-stdio`) and over `POST /mcp`, the
+  axum/hyper rewrite of `imbh-server` with its body/connection/timeout limits, gzip request bodies, and the
+  `imbh-tui` module split. None are in `imbh`/`imbh-core`/`imbh-lgtm`, the only three crates we link.
+- *Still open, unchanged by this release.* `FlushGauges` remains unsurfaced (see the 0.2.0 entry and
+  `TODO.md`).
+- *The module release moves too, this time.* `make release VERSION=v0.3.0` bumps `internal/release.Version`
+  `v0.2.0` → `v0.3.0` along with the version references in `README.md` and `cmd/imbhgo-fetch`. That axis is
+  the binding's published-asset tag and stays independent of the dependency pin in principle; the numbers
+  coinciding here is the release decision, not a rule. Tagging is still a separate manual step — pushing
+  `v0.3.0` is what triggers the prebuilt cross-build.

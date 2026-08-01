@@ -79,7 +79,9 @@ type DbOptions struct {
 	// MaintenanceBackgroundNs tick and at the memory-budget-derived byte threshold. (imbh 0.2.0:
 	// DbBuilder::flush.)
 	Flush string `json:"flush,omitempty"`
-	// PromoteKeys promotes the given attribute keys to dedicated columns.
+	// PromoteKeys promotes the given attribute keys to dedicated columns. Reserved names (including
+	// "service") are dropped by imbh, and "service.name" needs no promotion: since imbh 0.3.0 both
+	// spellings resolve to the built-in service column in every group-by and attribute predicate.
 	PromoteKeys []string `json:"promote_keys,omitempty"`
 }
 
