@@ -79,8 +79,8 @@ prebuilt `libimbhgo.a` for your platform from the matching GitHub release, verif
 prints the `CGO_LDFLAGS` to link against it:
 
 ```sh
-go get github.com/moriyoshi/imbh-go@v0.1.1
-eval "$(go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.1.1 -print-env)"
+go get github.com/moriyoshi/imbh-go@v0.2.0
+eval "$(go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.2.0 -print-env)"
 go build -tags sable_extern_lib ./...
 ```
 
@@ -91,11 +91,11 @@ go build -tags sable_extern_lib ./...
   git-bash / MSYS2. From a native Windows shell, ask for its dialect explicitly:
 
   ```bat
-  for /f "delims=" %i in ('go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.1.1 -print-env -shell cmd') do @%i
+  for /f "delims=" %i in ('go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.2.0 -print-env -shell cmd') do @%i
   ```
 
   ```powershell
-  go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.1.1 -print-env -shell powershell | Invoke-Expression
+  go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.2.0 -print-env -shell powershell | Invoke-Expression
   ```
 - The fetch tool caches the archive under your user cache dir (override with `-dest`) and re-detects
   glibc vs musl on Linux automatically (override with `-libc`).
@@ -328,6 +328,7 @@ works but through `db.Query(ctx, sql)` rather than a dedicated method.
 | `flush` (seal buffer → segment) | ✅ `Flush` | |
 | Read-only open (`open_read_only`) | ✅ `OpenReadOnly` | many-reader / single-writer; writes on the handle are rejected |
 | Builder options (memory budget, WAL mode, retention, compression, maintenance, promote) | ✅ `OpenWith(DbOptions)` | host-runtime-`Handle` variants (async ingest, runtime-driven maintenance) deferred |
+| Flush policy (`DbBuilder::flush`, imbh 0.2.0) | ✅ `DbOptions.Flush` | imbh's spec string (`"interval=5s,wal=64MiB"`, or `"manual"`); needs `MaintenanceBackgroundNs` set, since that is what runs the scheduler |
 | Ops: `stats`, `compact`, `maintain`, `snapshot`, `segments`, `segment_files`, `durable_through`, `export` (Arrow IPC) | ✅ `Stats` / `Compact` / `Maintain` / `Snapshot` / `Segments` / `SegmentFiles` / `DurableThrough` / `Export` (+`ExportRecords`) | writer-only ops error on a read-only handle |
 
 ### Query surfaces

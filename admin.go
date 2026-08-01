@@ -68,7 +68,17 @@ type DbOptions struct {
 	// RefreshTtlNs is the refresh TTL when Refresh == "ttl".
 	RefreshTtlNs int64 `json:"refresh_ttl_ns,omitempty"`
 	// MaintenanceBackgroundNs runs background maintenance on an owned OS thread every N ns (0 = manual).
+	// This picks *who* runs the scheduler; Flush picks *when* it seals. imbh's default is manual, so
+	// with this at 0 nothing seals (and no WAL fsync timer runs) unless you call Flush/Maintain yourself.
 	MaintenanceBackgroundNs int64 `json:"maintenance_background_ns,omitempty"`
+	// Flush is imbh's flush-policy spec: comma-separated key=value pairs, or the single word "manual"
+	// ("off"/"none"/"never" alias it). Keys are interval/every (duration), buffer/bytes (size, or
+	// "budget"/"off"), rows (count), wal (size), idle (duration), and tick (duration); the triggers OR
+	// together. E.g. "interval=5s,wal=64MiB". Unlike the other string tags, a malformed spec fails the
+	// open rather than falling back to a default. "" leaves imbh's own default, which seals on the
+	// MaintenanceBackgroundNs tick and at the memory-budget-derived byte threshold. (imbh 0.2.0:
+	// DbBuilder::flush.)
+	Flush string `json:"flush,omitempty"`
 	// PromoteKeys promotes the given attribute keys to dedicated columns.
 	PromoteKeys []string `json:"promote_keys,omitempty"`
 }

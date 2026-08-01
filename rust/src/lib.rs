@@ -1868,6 +1868,7 @@ pub unsafe extern "C" fn imbhgo_open_read_only(ptr: *const u8, len: usize, err_i
 /// fields; `path` is required). Returns its handle id (0 on error). Maps the JSON onto imbh's
 /// `DbBuilder` setters. The host-runtime option variants (`Maintenance::Runtime`, `Ingest::Async`),
 /// which carry a tokio `Handle`, are intentionally not exposed — they need explicit runtime wiring.
+/// A malformed `flush` spec fails the open (see `build_db`); every other tag falls back to the default.
 ///
 /// # Safety
 /// `ptr` must point to at least `len` initialized bytes for the duration of the call (a valid UTF-8
@@ -1887,7 +1888,8 @@ pub unsafe extern "C" fn imbhgo_open_opts(ptr: *const u8, len: usize, err_id: u6
 
 /// JSON wire for `imbhgo_open_opts`: a flat mirror of the `DbBuilder` setters. Absent/zero/empty
 /// fields leave imbh's default in place. `compression`/`wal_mode`/`refresh` are string tags
-/// (unrecognized values are ignored, keeping the default).
+/// (unrecognized values are ignored, keeping the default); `flush` is a spec string parsed by imbh,
+/// where a malformed value is an error rather than a silent fallback.
 #[derive(serde::Deserialize, Default)]
 struct DbOptionsWire {
     #[serde(default)]
@@ -1916,6 +1918,8 @@ struct DbOptionsWire {
     refresh_ttl_ns: i64,
     #[serde(default)]
     maintenance_background_ns: i64,
+    #[serde(default)]
+    flush: String, // imbh FlushPolicy spec, e.g. "interval=5s,wal=64MiB" or "manual"
     #[serde(default)]
     promote_keys: Vec<String>,
 }
@@ -1973,6 +1977,15 @@ fn build_db(w: DbOptionsWire) -> imbh::Result<Arc<Db>> {
         b = b.maintenance(imbh::Maintenance::Background(std::time::Duration::from_nanos(
             w.maintenance_background_ns as u64,
         )));
+    }
+    // Only set a policy when the caller spelled one: leaving `DbBuilder::flush` unset is *not* the
+    // same as setting `FlushPolicy::default()`. Unset resolves to `default().or_interval(maintenance
+    // interval)` (the historical "seal on the maintenance tick" behavior); an explicit default has no
+    // periodic trigger at all. A malformed spec fails the open rather than silently running a
+    // different cadence — `FlushPolicy: FromStr` errors with `imbh::Error`, so `?` carries the reason
+    // out through the open-error slot.
+    if !w.flush.trim().is_empty() {
+        b = b.flush(w.flush.parse::<imbh::FlushPolicy>()?);
     }
     if !w.promote_keys.is_empty() {
         b = b.promote(imbh::Promote::new(w.promote_keys.clone()));

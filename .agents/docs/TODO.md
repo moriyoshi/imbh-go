@@ -231,6 +231,11 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
 - [ ] **Host-runtime-`Handle` DbBuilder variants.** `Maintenance::Runtime` and `Ingest::Async` are intentionally
       deferred in `OpenWith(DbOptions)` — they need explicit tokio-runtime wiring, a separate design.
       *(LTM: imbh-upstream-surface)*
+- [ ] **`FlushGauges` not surfaced.** imbh 0.2.0 added `Storage::flush_gauges` (buffered bytes/rows + the idle
+      clock) alongside the flush scheduler, re-exported from the facade. `DbStats` already carries
+      `BufferBytes`/`BufferRows`, so the only genuinely new signal is the idle clock — which matters to a host
+      running its own scheduler rather than `DbOptions.Flush`. Surface it if such a host appears.
+      *(JOURNAL 2026-08-01)*
 - [ ] **PromQL metric-name sanitization.** Resolution is 1:1 + dots→underscores only, not full Prometheus name
       sanitization — a known follow-on if broader Prometheus name compatibility is wanted.
       *(LTM: lgtm-query-languages)*
