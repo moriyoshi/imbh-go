@@ -12,8 +12,8 @@ import (
 )
 
 // Version is the module release this source tree corresponds to, bumped in lockstep with each tag.
-// The prebuilt assets are published under a GitHub release named after it (e.g. "v0.1.1").
-const Version = "v0.1.1"
+// The prebuilt assets are published under a GitHub release named after it (e.g. "v0.2.0").
+const Version = "v0.2.0"
 
 // DefaultBaseURL is the GitHub Releases download prefix. A concrete asset lives at
 // <DefaultBaseURL>/<version>/<asset>. Overridable in the fetch tool (e.g. for a mirror or a local
@@ -32,7 +32,7 @@ const (
 )
 
 // AssetName returns the compressed-archive file name for a target cell, e.g.
-// "libimbhgo-v0.1.1-linux-amd64.a.zst" (glibc/default) or "libimbhgo-v0.1.1-linux-amd64-musl.a.zst".
+// "libimbhgo-v0.2.0-linux-amd64.a.zst" (glibc/default) or "libimbhgo-v0.2.0-linux-amd64-musl.a.zst".
 // Only Linux musl carries a libc suffix; glibc is the default and other OSes have no libc axis.
 func AssetName(version, goos, goarch, libc string) string {
 	name := fmt.Sprintf("libimbhgo-%s-%s-%s", version, goos, goarch)
@@ -53,7 +53,7 @@ func SumsURL(baseURL, version string) string {
 }
 
 // CacheSubdir is the per-cell directory (relative to the cache root) where the decompressed
-// libimbhgo.a is placed, e.g. "imbhgo/v0.1.1/linux-amd64" or ".../linux-amd64-musl".
+// libimbhgo.a is placed, e.g. "imbhgo/v0.2.0/linux-amd64" or ".../linux-amd64-musl".
 func CacheSubdir(version, goos, goarch, libc string) string {
 	cell := fmt.Sprintf("%s-%s", goos, goarch)
 	if goos == "linux" && libc == LibcMusl {

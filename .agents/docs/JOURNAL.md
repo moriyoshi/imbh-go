@@ -674,3 +674,58 @@ matrix, which is where that flow lives.
   rather than a missing prerequisite. While the flag stays, a failed windows build lets `publish` proceed
   without the asset and this smoke job fails on the missing download: louder than the silence it replaces,
   but failing fast at build is better.
+
+## 2026-08-01 — imbh 0.2.0 re-pinned: the flush scheduler is now a binding option
+
+Followed the upstream `v0.2.0` release (published to crates.io 2026-07-30). `imbh`/`imbh-core`/`imbh-lgtm`
+move together to `0.2.0`, keeping the lockstep that makes `imbh-core` a single crate instance; the whole
+`imbh*` tree in `rust/Cargo.lock` resolves to `0.2.0`. The release is **API-additive for us** — the facade's
+only public-surface changes are a new `FlushGauges` re-export and `DbBuilder::flush(FlushPolicy)` — so the
+version bump alone compiled, passed clippy, and passed the full `-race` suite untouched.
+
+- *What is actually new for a binding consumer.* 0.2.0 splits a decision that used to be one knob.
+  `Maintenance` chose *who* runs the background loop; the new `FlushPolicy` chooses *when* that loop seals
+  the mutable buffer. The triggers OR together (periodic, buffered heap, buffered rows, on-disk WAL size,
+  idle) and `tick` sets the evaluation cadence. Before this, the seal cadence *was* the maintenance
+  interval, so a host that wanted hourly retention was forced into hourly sealing.
+- *Exposed as one spec string, not five fields.* `DbOptions.Flush` carries imbh's own spec syntax
+  (`"interval=5s,wal=64MiB"`, or `"manual"`), parsed on the Rust side by `FlushPolicy: FromStr`. Mirroring
+  the five triggers as five JSON fields would have meant re-deriving upstream's defaulting and unit parsing
+  in the wire struct and keeping it in sync forever; one string keeps the semantics owned upstream, and it
+  is the same value an operator already writes for `imbhd`'s `IMBH_FLUSH`.
+- *Unset is not the same as default — the one subtle part.* `build_db` only calls `.flush()` when the spec
+  is non-empty. Leaving the builder untouched resolves upstream to `FlushPolicy::default().or_interval(
+  maintenance interval)`, i.e. the historical behavior; passing an explicit `FlushPolicy::default()` would
+  instead install a policy with **no periodic trigger at all**. Guarding on the empty string is what keeps
+  the zero value of `DbOptions` byte-for-byte the 0.1.x behavior.
+- *A malformed spec fails the open.* Deliberately unlike the neighboring `compression`/`wal_mode`/`refresh`
+  tags, which silently keep their default on an unrecognized value. `FromStr::Err` is `imbh::Error`, so `?`
+  in `build_db` carries the reason out through the existing open-error slot with no new plumbing, and the
+  Go caller sees e.g. ``config error: flush policy: unknown key `bogus` (expected interval/buffer/rows/wal/
+  idle/tick)``. A cadence typo that silently ran a different cadence is the failure this avoids — the same
+  reasoning upstream applied to `imbhd` startup.
+- *The regression gate is behavioral, not just a round-trip.* `TestFlushPolicySealsOnItsOwnClock` opens with
+  a **one-hour** maintenance interval and `flush="interval=50ms,tick=10ms"`, ingests, and polls `Stats()`
+  until `BufferRows == 0 && SegmentRows == N` — never calling `Flush()`/`Maintain()`. It can only pass if
+  the seal cadence is genuinely independent of the retention cadence, so it fails on 0.1.x by construction.
+  `TestFlushPolicyManualDisablesSealing` is its inverse: a 20 ms maintenance interval (short enough that an
+  unset policy would have sealed inside the window) plus `flush="manual"` must leave the buffer untouched,
+  then seal on an explicit `Flush()`.
+- *`WalMode::Interval(d)` became real, for free.* Upstream notes it previously fsynced only opportunistically
+  on `flush`/`close`, because no timer existed to honor it; the new scheduler is that timer. The binding has
+  always exposed `WalMode: "interval"`, so this is a behavior fix that lands for existing callers with no
+  binding change — but only when `MaintenanceBackgroundNs` is set, since that is what starts the scheduler.
+- *A trap worth naming, unchanged by this release.* imbh's default `Maintenance` is `Manual`, so a
+  `DbOptions` that leaves `MaintenanceBackgroundNs` at 0 has **no scheduler at all**: nothing seals, the WAL
+  is never reclaimed, and `Flush` is now documented to say so on both fields. This is exactly the bug 0.2.0
+  fixed *in `imbhd`* (it had opened with the library default and never sealed); the binding hands that same
+  decision to its embedder, which is right, but it should not be silent. Documented on both option fields
+  rather than changed — flipping the default would be a behavior change no caller asked for.
+- *Not followed.* 0.2.0's other headline items are downstream of the library and do not reach this binding:
+  the MCP endpoint and stdio transport (`imbh-mcp`, `imbh-server`, `imbh-tui`), the axum/hyper rewrite, the
+  Docker log driver, CD artifacts. `FlushGauges` (the new `imbh-storage` re-export behind
+  `Storage::flush_gauges` — buffered bytes/rows plus the idle clock) is *not* surfaced: `DbStats` already
+  carries `BufferBytes`/`BufferRows`, and the gauges' distinct value is the idle clock, which only matters
+  to a host implementing its own scheduler. Left for when something needs it.
+- *imbh-go's own release version is untouched.* `internal/release.Version` stays `v0.1.1`; that axis is the
+  binding's published asset tag, not the dependency pin, and bumping it is a release decision.

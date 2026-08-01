@@ -1789,9 +1789,9 @@ dependencies = [
 
 [[package]]
 name = "imbh"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c73def7975b95762637c5987a07f8fb25b8f06aa93cb7d26331bc28dcc73fb3"
+checksum = "4ee9b9a3f8a846084b153350db4b89e377cd3a0aaf00a43f5ef125ee8e6cba5a"
 dependencies = [
  "arrow",
  "datafusion",
@@ -1808,9 +1808,9 @@ dependencies = [
 
 [[package]]
 name = "imbh-core"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6d184ccddf19f3ea57c29efbca000da66cb6acfa810906a1e8bc5ed5842fbc6"
+checksum = "fcbf10a0c6e4c02c9bd30aa11250bd9ba3a74e967329a706964e1c4bd41cfe49"
 dependencies = [
  "serde",
  "tokio",
@@ -1818,9 +1818,9 @@ dependencies = [
 
 [[package]]
 name = "imbh-index"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "307d449712fd6b71aeccb22dd29a8578ab929428964de9cd273730594ec3113a"
+checksum = "8d44fa10b47fd6bd48a67369698bebb40b16d2ea42bd05c84dd86ced77041683"
 dependencies = [
  "imbh-core",
  "tantivy",
@@ -1828,9 +1828,9 @@ dependencies = [
 
 [[package]]
 name = "imbh-lgtm"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9781aa55adb5316d5677627770866cd20d30ab5fd656ac2afe1a839a0181c4d2"
+checksum = "16b99505b77fe486ca5c1599680d04641a31e6c52315abbccaf0203a796ed817"
 dependencies = [
  "imbh",
  "imbh-core",
@@ -1840,9 +1840,9 @@ dependencies = [
 
 [[package]]
 name = "imbh-otlp"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b94eff07900b67318374fdaa0560faf7a52720826f1da1fae3cf569f3f447f8"
+checksum = "392c20a12089a6141345458a420c67bdaf47e4cf44995aaf36421302f875d0ce"
 dependencies = [
  "imbh-core",
  "opentelemetry-proto",
@@ -1851,9 +1851,9 @@ dependencies = [
 
 [[package]]
 name = "imbh-proto"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b094fc876fcc7cc5feb890793cbe211e318bee71c5920e73b47d7355c78e728"
+checksum = "04abcc1cfa08e1eb27fe2ce31c6fde0575c3241173764ec57c27ad3ea4fc4c85"
 dependencies = [
  "prost",
  "prost-build",
@@ -1862,9 +1862,9 @@ dependencies = [
 
 [[package]]
 name = "imbh-query"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d513fc6f02a6c4411f1a12eef873447db273af59e9b4b75967ff6b46bf111ac"
+checksum = "56ec428d08c250721ec4eaeb1c96cee8c54328d33701ae48d80ad0c1904b6bd1"
 dependencies = [
  "async-trait",
  "datafusion",
@@ -1875,9 +1875,9 @@ dependencies = [
 
 [[package]]
 name = "imbh-storage"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "126a851d5d93263b8d7c23c75c12bdb3fc107f720e01cc107299af8af8183b8c"
+checksum = "521fecd6d294ac41d0e5c242b05e8884288bdcbb00044235980f3885ff3bee26"
 dependencies = [
  "arrow",
  "fs4",
