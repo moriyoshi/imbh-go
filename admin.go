@@ -79,6 +79,17 @@ type DbOptions struct {
 	// MaintenanceBackgroundNs tick and at the memory-budget-derived byte threshold. (imbh 0.2.0:
 	// DbBuilder::flush.)
 	Flush string `json:"flush,omitempty"`
+	// Duplicates picks what happens when two metric datapoints share a series *and* a timestamp — a
+	// pair PromQL has no meaning for, since series identity is service + __name__ + the string
+	// attributes. "" (or "error_on_read") keeps imbh's historical behavior: ingest takes both and any
+	// PromQL query touching that series fails, naming the metric, labels and instant. "last_wins"
+	// collapses the duplicated instant at read time, degrading one point instead of the whole metric —
+	// the only remedy for points already written. "reject" drops the repeat at ingest and counts it in
+	// Receipt.Rejected and DbStats.IngestRejected; it costs a fixed ~13 MiB guard and takes an optional
+	// lookback, "reject,recent=N" (default 262144 points). The guard is process-local, best-effort, and
+	// never rejects out-of-order or late points — only an exact (series, timestamp) repeat. Like Flush,
+	// a malformed spec fails the open rather than falling back. (imbh 0.5.0: DbBuilder::duplicates.)
+	Duplicates string `json:"duplicates,omitempty"`
 	// PromoteKeys promotes the given attribute keys to dedicated columns. Reserved names (including
 	// "service") are dropped by imbh, and "service.name" needs no promotion: since imbh 0.3.0 both
 	// spellings resolve to the built-in service column in every group-by and attribute predicate.

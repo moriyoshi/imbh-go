@@ -360,6 +360,8 @@ struct DbStatsWire {
     ingest_queue_depth: u64,
     ingest_dropped: u64,
     ingest_errors: u64,
+    /// imbh 0.5.0: points dropped by `Duplicates::Reject`. Stays 0 under every other policy.
+    ingest_rejected: u64,
 }
 
 async fn stats_handler(req: Vec<u8>) -> Result<Payload, Vec<u8>> {
@@ -385,6 +387,7 @@ async fn stats_handler(req: Vec<u8>) -> Result<Payload, Vec<u8>> {
         ingest_queue_depth: s.ingest_queue_depth as u64,
         ingest_dropped: s.ingest_dropped,
         ingest_errors: s.ingest_errors,
+        ingest_rejected: s.ingest_rejected,
     };
     json_payload(&wire)
 }
@@ -1868,7 +1871,8 @@ pub unsafe extern "C" fn imbhgo_open_read_only(ptr: *const u8, len: usize, err_i
 /// fields; `path` is required). Returns its handle id (0 on error). Maps the JSON onto imbh's
 /// `DbBuilder` setters. The host-runtime option variants (`Maintenance::Runtime`, `Ingest::Async`),
 /// which carry a tokio `Handle`, are intentionally not exposed — they need explicit runtime wiring.
-/// A malformed `flush` spec fails the open (see `build_db`); every other tag falls back to the default.
+/// A malformed `flush` or `duplicates` spec fails the open (see `build_db`); every other tag falls
+/// back to the default.
 ///
 /// # Safety
 /// `ptr` must point to at least `len` initialized bytes for the duration of the call (a valid UTF-8
@@ -1888,8 +1892,8 @@ pub unsafe extern "C" fn imbhgo_open_opts(ptr: *const u8, len: usize, err_id: u6
 
 /// JSON wire for `imbhgo_open_opts`: a flat mirror of the `DbBuilder` setters. Absent/zero/empty
 /// fields leave imbh's default in place. `compression`/`wal_mode`/`refresh` are string tags
-/// (unrecognized values are ignored, keeping the default); `flush` is a spec string parsed by imbh,
-/// where a malformed value is an error rather than a silent fallback.
+/// (unrecognized values are ignored, keeping the default); `flush` and `duplicates` are spec strings
+/// parsed by imbh, where a malformed value is an error rather than a silent fallback.
 #[derive(serde::Deserialize, Default)]
 struct DbOptionsWire {
     #[serde(default)]
@@ -1920,6 +1924,8 @@ struct DbOptionsWire {
     maintenance_background_ns: i64,
     #[serde(default)]
     flush: String, // imbh FlushPolicy spec, e.g. "interval=5s,wal=64MiB" or "manual"
+    #[serde(default)]
+    duplicates: String, // imbh Duplicates spec: "error_on_read" | "last_wins" | "reject[,recent=N]"
     #[serde(default)]
     promote_keys: Vec<String>,
 }
@@ -1986,6 +1992,14 @@ fn build_db(w: DbOptionsWire) -> imbh::Result<Arc<Db>> {
     // out through the open-error slot.
     if !w.flush.trim().is_empty() {
         b = b.flush(w.flush.parse::<imbh::FlushPolicy>()?);
+    }
+    // imbh 0.5.0's duplicate-timestamp policy. Unlike `flush`, unset and an explicit default are the
+    // same thing here (`Duplicates::ErrorOnRead`, what the builder already holds), so the guard only
+    // avoids a pointless parse. A malformed spec still fails the open rather than silently running a
+    // policy the caller did not ask for — `Duplicates: FromStr` errors with `imbh::Error`, so `?`
+    // carries the reason out through the open-error slot.
+    if !w.duplicates.trim().is_empty() {
+        b = b.duplicates(w.duplicates.parse::<imbh::Duplicates>()?);
     }
     if !w.promote_keys.is_empty() {
         b = b.promote(imbh::Promote::new(w.promote_keys.clone()));

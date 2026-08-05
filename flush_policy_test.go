@@ -106,9 +106,10 @@ func TestFlushPolicyManualDisablesSealing(t *testing.T) {
 	}
 }
 
-// TestFlushPolicyRejectsBadSpec pins the one place where an options string is *not* forgiving: a
-// malformed flush spec fails the open (and says why) instead of silently running a different cadence.
-// The other string tags (compression/wal_mode/refresh) keep their default on an unknown value.
+// TestFlushPolicyRejectsBadSpec pins one of the two places where an options string is *not* forgiving
+// (the other is Duplicates): a malformed flush spec fails the open (and says why) instead of silently
+// running a different cadence. The string tags (compression/wal_mode/refresh) keep their default on an
+// unknown value.
 func TestFlushPolicyRejectsBadSpec(t *testing.T) {
 	for _, spec := range []string{"interval", "bogus=5s", "interval=5parsecs"} {
 		db, err := OpenWith(DbOptions{Path: t.TempDir(), Flush: spec})

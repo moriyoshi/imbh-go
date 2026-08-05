@@ -335,6 +335,7 @@ works but through `db.Query(ctx, sql)` rather than a dedicated method.
 | Read-only open (`open_read_only`) | ✅ `OpenReadOnly` | many-reader / single-writer; writes on the handle are rejected |
 | Builder options (memory budget, WAL mode, retention, compression, maintenance, promote) | ✅ `OpenWith(DbOptions)` | host-runtime-`Handle` variants (async ingest, runtime-driven maintenance) deferred |
 | Flush policy (`DbBuilder::flush`, imbh 0.2.0) | ✅ `DbOptions.Flush` | imbh's spec string (`"interval=5s,wal=64MiB"`, or `"manual"`); needs `MaintenanceBackgroundNs` set, since that is what runs the scheduler |
+| Duplicate-timestamp policy (`DbBuilder::duplicates`, imbh 0.5.0) | ✅ `DbOptions.Duplicates` | imbh's spec string: `"error_on_read"` (default, fails the PromQL read), `"last_wins"` (collapse at read), `"reject[,recent=N]"` (drop at ingest → `Receipt.Rejected`, `DbStats.IngestRejected`) |
 | Ops: `stats`, `compact`, `maintain`, `snapshot`, `segments`, `segment_files`, `durable_through`, `export` (Arrow IPC) | ✅ `Stats` / `Compact` / `Maintain` / `Snapshot` / `Segments` / `SegmentFiles` / `DurableThrough` / `Export` (+`ExportRecords`) | writer-only ops error on a read-only handle |
 
 ### Query surfaces
