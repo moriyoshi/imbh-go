@@ -31,7 +31,7 @@ CGO_LDFLAGS links ONE combined static archive:
 
 rust crate `imbhgo` (crate-type = ["staticlib"])   → rust/target/release/libimbhgo.a
    ├── depends on  sable  (rlib, git-pinned)   → runtime + registry + all sable_* C symbols
-   ├── depends on  imbh   (crates.io 0.3.0; features: cdata, proto, search, serde)
+   ├── depends on  imbh   (crates.io 0.5.0; features: cdata, proto, search, serde)
    └── imbhgo lib.rs: register_stream(OP_SQL, …) + FFI batch export + free shims
 ```
 
@@ -39,7 +39,7 @@ rust crate `imbhgo` (crate-type = ["staticlib"])   → rust/target/release/libim
 
 **Toolchain pin.** `go.mod` pins `toolchain go1.26.4` to match sable. The fused runtime reaches Go's internal ABI via `//go:linkname`, and sable certifies its support matrix per `(Go version × arch)`; the binding inherits that matrix. The Go build and tests link `libimbhgo.a`, so it must be built first after any Rust change (`make rust`; `make test` does both).
 
-**Dependency sourcing.** Both upstreams are external deps, not path deps, so this binding is buildable without local checkouts. **imbh** comes from crates.io: `imbh`, `imbh-core`, and `imbh-lgtm` are pinned in lockstep at `0.1.0` (the shared version matters — `imbh-core` must resolve to the same instance as imbh's own transitive `imbh-core`, else `imbh::Attributes != imbh_core::Attributes` in the glue). **sable** is not published; it is a git dep pinned to a **`main`** commit — Rust `sable = { git = "https://github.com/moriyoshi/sable", rev = "0c6fe56" }` (cargo finds the crate in the repo's `rust/` subdir; sable has no tags, so a `main` SHA is the most durable pin available), and Go a **direct** `require github.com/moriyoshi/sable <pseudo-version>` with **no** `replace` (a `replace` applies only to the main module and is ignored for downstream consumers, so the direct require is what makes imbh-go importable). Local checkouts at `../imbh` / `../sable` remain the co-development path; re-pin the deps when upstream changes land there.
+**Dependency sourcing.** Both upstreams are external deps, not path deps, so this binding is buildable without local checkouts. **imbh** comes from crates.io: `imbh`, `imbh-core`, and `imbh-lgtm` are pinned in lockstep at `0.5.0` (the shared version matters — `imbh-core` must resolve to the same instance as imbh's own transitive `imbh-core`, else `imbh::Attributes != imbh_core::Attributes` in the glue). **sable** is not published; it is a git dep pinned to a **`main`** commit — Rust `sable = { git = "https://github.com/moriyoshi/sable", rev = "0c6fe56" }` (cargo finds the crate in the repo's `rust/` subdir; sable has no tags, so a `main` SHA is the most durable pin available), and Go a **direct** `require github.com/moriyoshi/sable <pseudo-version>` with **no** `replace` (a `replace` applies only to the main module and is ignored for downstream consumers, so the direct require is what makes imbh-go importable). Local checkouts at `../imbh` / `../sable` remain the co-development path; re-pin the deps when upstream changes land there.
 
 ## 4. The data path
 

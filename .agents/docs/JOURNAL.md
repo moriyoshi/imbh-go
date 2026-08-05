@@ -778,3 +778,92 @@ full `-race` suite passed with no glue edit. What changed is *behavior*, and it 
   the binding's published-asset tag and stays independent of the dependency pin in principle; the numbers
   coinciding here is the release decision, not a rule. Tagging is still a separate manual step — pushing
   `v0.3.0` is what triggers the prebuilt cross-build.
+
+## 2026-08-05 — imbh 0.5.0 re-pinned: a duplicate-timestamp policy, and two counters that finally move
+
+Followed the upstream `v0.5.0` release (published to crates.io). `imbh`/`imbh-core`/`imbh-lgtm` move
+together to `0.5.0`, keeping the lockstep that makes `imbh-core` a single crate instance; the whole
+`imbh*` tree in `rust/Cargo.lock` follows transitively. sable is untouched at `0c6fe56` — this is an
+imbh-only bump. Unlike the 0.3.0 bump, this one is not signature-neutral: it needed glue in both
+`rust/src/lib.rs` and the Go wire structs.
+
+- *What actually reached us.* Two of 0.5.0's three breaking edges touch the binding, and the third does
+  not. `DbStats` gained `ingest_rejected` → mirrored into `DbStatsWire` and `DbStats.IngestRejected`.
+  `DbBuilder::duplicates(Duplicates)` is new → surfaced as `DbOptions.Duplicates`. `SemanticError` became
+  `#[non_exhaustive]` with a `DuplicateTimestamp(String)` variant, and that one cost nothing: the glue
+  only ever *formats* imbh errors (`e.to_string().into_bytes()`), never matches them, so the exhaustive
+  match a `#[non_exhaustive]` enum breaks does not exist here. Worth keeping that way — the error path's
+  "format, never match" shape is what makes upstream error-enum growth a non-event for this binding.
+- *`Receipt.Rejected` was already plumbed and always zero.* `encode_receipt` has carried `rejected` in
+  bytes 8..16 of the fixed 26-byte record since M2, and Go has decoded it into `Receipt.Rejected` just as
+  long. Before 0.5.0 no imbh policy could make it non-zero, so the field was a correct-but-dead mirror of
+  an upstream counter. `Duplicates::Reject` is the first thing that moves it — no ABI change, no
+  re-encode, the existing wire simply started carrying information.
+- *Surfaced as a spec string, following `flush`.* `DbOptionsWire.duplicates` is parsed by imbh's own
+  `Duplicates: FromStr` (`error_on_read` | `last_wins` | `reject[,recent=N]`), so the binding stays out of
+  the business of enumerating policy variants and inherits new modes for free. A malformed spec fails the
+  open rather than falling back — the second such field after `flush`, and for a sharper reason: a typo
+  silently resolving to the default would leave ingest accepting exactly the repeats the caller asked to
+  drop, and nothing would say so until some later PromQL query failed. One difference from `flush` worth
+  recording, since the guard there is load-bearing and here it is not: for `flush`, unset ≠
+  `FlushPolicy::default()`, so skipping the setter is semantically required; for `duplicates`, unset and
+  an explicit `ErrorOnRead` are the same value, so the `is_empty()` guard only avoids a pointless parse.
+- *The gate is `duplicates_test.go`, and it starts with the bug.* `TestDuplicatesDefaultFailsTheRead`
+  pins the *unfixed* behavior — ingest takes both points, the PromQL read fails — because that is what
+  gives the two remedies meaning, and because it is the test that would notice a future imbh silently
+  collapsing duplicates by default. It also asserts the diagnostic names the metric: 0.5.0's whole point
+  on the read path is that the error identifies the metric, the label set and the instant, so a bare
+  "query failed" would be a regression even though the query still fails.
+- *`last_wins` is tested against pre-existing bad data, deliberately.* The test writes the duplicates
+  under the *default* policy, flushes, closes, then reopens with `last_wins`. Ingesting under the policy
+  that rescues the read would prove nothing about the case that matters — a database that already holds
+  duplicates, which upstream calls out as the only situation no ingest-side policy can repair.
+- *The replay case is the subtle one.* `TestDuplicatesRejectSurvivesWalReplay` closes without a flush, so
+  the accepted points sit in the WAL tail, then reopens under `reject`. Upstream's guard is process-local
+  and starts empty at every open, and the WAL stores the raw OTLP body — so replay re-derives the tail
+  with a guard that has forgotten everything. That is deliberate and is the property to protect: an empty
+  guard is strictly *more* permissive, so replay can never drop a row the writer kept. A per-series
+  `last_timestamp` rule (the obvious implementation) would be order-sensitive and could reject on replay
+  what the writer accepted, i.e. lose data. The test asserts the accepted points survive the round trip.
+- *The guard keys on the pair, and the test says so.* After the repeat is rejected, a point at a
+  *different* instant on the same series must still be accepted — otherwise the policy would have
+  degraded into "one point per series". Cheap assertion, and it is the failure mode a naive
+  implementation actually has.
+- *Not followed.* 0.4.0 sat between the two pins and reaches nothing we link: the new `imbh-head` crate
+  and `imbh_server::head` routes, `imbh-tui --url` remote mode, and the TUI navigation/waterfall work.
+  Its one breaking change (`imbh_tui::cli::Mode::Tui` carrying `Source`) is in a binary crate. 0.5.0's
+  Docker log-driver plugin publishing is likewise packaging, not library. Nothing in `imbh`/`imbh-core`/
+  `imbh-lgtm` beyond what is listed above.
+- *Also fixed upstream, invisibly to us.* 0.5.0 fixes a metric recorded as **both** a gauge and a sum
+  tripping the duplicate-timestamp rejection on a well-formed database (instant selectors query both
+  tables and concatenate, and the derived label set does not distinguish instrument kind). No binding
+  change; a caller emitting one metric name as two instrument kinds simply stops seeing spurious errors.
+- *Still open, unchanged by this release.* `FlushGauges` remains unsurfaced (see the 0.2.0 entry and
+  `TODO.md`).
+- *The module release does not move here.* `internal/release.Version` stays `v0.3.0`: the binding's
+  published-asset tag is an independent axis, and cutting one is an explicit `make release` + tag push,
+  not a consequence of a dependency bump. The 0.3.0 entry's coincidence was a release decision, not a
+  rule.
+
+**What landed.** Rust: `rust/Cargo.toml` (three pins `0.3.0` → `0.5.0`, and the comment block rewritten
+to record what each release since 0.1.1 bought us); `rust/Cargo.lock` (the whole `imbh*` tree, 8 crates,
+follows); `rust/src/lib.rs` (`DbStatsWire.ingest_rejected` + its mapping in `stats_handler`,
+`DbOptionsWire.duplicates` + its arm in `build_db`, and the two doc comments that enumerate which option
+strings are unforgiving). Go: `ops.go` (`DbStats.IngestRejected`), `admin.go` (`DbOptions.Duplicates`),
+new `duplicates_test.go` (5 cases), `flush_policy_test.go` (its "the one place an options string is not
+forgiving" comment is now "one of two"). Docs: `README.md` capability table, `ARCHITECTURE.md`,
+`AGENTS.md`, `.agents/docs/OVERVIEW.md`, `.agents/docs/PLAN.md`.
+
+**Gate.** Full standard gate green on linux/amd64: `cargo build --release`, `cargo clippy --release
+-- -D warnings`, `gofmt -l` (clean), `go build`, `go vet`, `go test -tags sable_extern_lib -race ./...`
+including the three leak / UAF gates. The Rust bump compiled before any glue was written — the
+`ingest_rejected` and `duplicates` work is *additive surface*, not repair, which is why nothing in the
+existing suite moved.
+
+**A drift correction found along the way.** `ARCHITECTURE.md`'s dependency-sourcing paragraph still said
+the `imbh*` crates were "pinned in lockstep at `0.1.0`" — it had been missed by the 0.1.1, 0.2.0 and
+0.3.0 bumps while the dependency-tree diagram three lines above it was updated each time. Two places
+stating the same pin, one of them not in the diff you look at when bumping. Fixed both here; the lesson
+for the next bump is to grep the version string across the docs rather than editing the block you
+remember. `internal/release.Version` and the `@v0.3.0` examples in `README.md` / `cmd/imbhgo-fetch` are
+*not* that drift — they are the binding's own published-asset tag, deliberately left where they are.

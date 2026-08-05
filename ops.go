@@ -85,6 +85,10 @@ type DbStats struct {
 	IngestQueueDepth uint64       `json:"ingest_queue_depth"`
 	IngestDropped    uint64       `json:"ingest_dropped"`
 	IngestErrors     uint64       `json:"ingest_errors"`
+	// IngestRejected counts metric points dropped at ingest because their (series, timestamp) was
+	// already accepted. Non-zero only under DbOptions.Duplicates == "reject"; every other policy
+	// takes duplicates and resolves them (or fails) at read time. (imbh 0.5.0.)
+	IngestRejected uint64 `json:"ingest_rejected"`
 }
 
 // Stats returns a snapshot of storage and ingest counters. Works on readers and writers.
