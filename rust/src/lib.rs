@@ -647,9 +647,20 @@ struct LogQueryWire {
     attr_le: std::collections::HashMap<String, f64>,
     #[serde(default)]
     attr_regex: std::collections::HashMap<String, String>,
+    /// Strict lower bound on the *arrival* clock (`observed_time > t`), unix nanos; 0 = unset. A
+    /// separate axis from `start`/`end`, which bound event time.
+    #[serde(default)]
+    observed_after: i64,
+    /// Which time column `ORDER BY` uses: "" (= "time", the default) or "observed_time".
+    #[serde(default)]
+    order_by: String,
 }
 
-fn build_log_query(w: LogQueryWire) -> imbh::LogQuery {
+/// Build imbh's `LogQuery` from the wire form. Fallible only for `order_by`: an unrecognized axis is
+/// rejected rather than silently defaulting to event time, because the whole point of asking for
+/// `observed_time` is that event-time order is *wrong* for a tailer — a typo that quietly downgraded a
+/// follow loop to the event clock would reintroduce exactly the missed-line bug the axis exists to fix.
+fn build_log_query(w: LogQueryWire) -> Result<imbh::LogQuery, String> {
     let mut q = imbh::LogQuery::new();
     if !w.service.is_empty() {
         q = q.service(&w.service);
@@ -705,14 +716,24 @@ fn build_log_query(w: LogQueryWire) -> imbh::LogQuery {
             end: imbh::Timestamp(w.end),
         });
     }
+    // Arrival bound: orthogonal to `range` above, and NULL-excluding by construction (a row with no
+    // `observed_time` is not comparable to a watermark, so it is left out rather than replayed).
+    if w.observed_after != 0 {
+        q = q.observed_after(imbh::Timestamp(w.observed_after));
+    }
+    q = q.order_by(match w.order_by.as_str() {
+        "" | "time" => imbh::LogOrder::Time,
+        "observed_time" => imbh::LogOrder::ObservedTime,
+        other => return Err(format!("unknown log order axis {other:?}")),
+    });
     if w.limit > 0 {
         q = q.limit(w.limit as usize);
     }
-    q.direction(if w.backward {
+    Ok(q.direction(if w.backward {
         imbh::Direction::Backward
     } else {
         imbh::Direction::Forward
-    })
+    }))
 }
 
 async fn query_logs_handler(req: Vec<u8>, tx: BatchSender) {
@@ -726,8 +747,12 @@ async fn query_logs_handler(req: Vec<u8>, tx: BatchSender) {
     let Some(db) = lookup_db(db_id) else {
         return store_query_error(query_id, "unknown db handle");
     };
+    let q = match build_log_query(w) {
+        Ok(q) => q,
+        Err(e) => return store_query_error(query_id, &format!("bad log query: {e}")),
+    };
     // `query_batches` now returns just the batches (`query_batches_with_stats` keeps the QueryStats).
-    match db.logs().query_batches(build_log_query(w)).await {
+    match db.logs().query_batches(q).await {
         Ok(batches) => stream_batches(query_id, batches, &tx).await,
         Err(e) => store_query_error(query_id, &e.to_string()),
     }
@@ -808,9 +833,10 @@ async fn log_count_handler(req: Vec<u8>) -> Result<Payload, Vec<u8>> {
     let w: LogQueryWire = serde_json::from_slice(body)
         .map_err(|e| format!("imbhgo: bad log count query: {e}").into_bytes())?;
     let db = lookup_db(db_id).ok_or_else(|| b"imbhgo: unknown db handle".to_vec())?;
+    let q = build_log_query(w).map_err(|e| format!("imbhgo: bad log count query: {e}").into_bytes())?;
     let n = db
         .logs()
-        .count(build_log_query(w))
+        .count(q)
         .await
         .map_err(|e| e.to_string().into_bytes())?;
     Ok(Payload::Bytes(n.to_le_bytes().to_vec()))
@@ -830,7 +856,10 @@ async fn query_log_page_handler(req: Vec<u8>, tx: BatchSender) {
     let limit = w.query.limit;
     // Rows consumed before this page (imbh's PageCursor serializes as its inner usize / a bare number).
     let prev_offset: u64 = w.after.as_ref().and_then(|v| v.as_u64()).unwrap_or(0);
-    let mut q = build_log_query(w.query);
+    let mut q = match build_log_query(w.query) {
+        Ok(q) => q,
+        Err(e) => return store_query_error(query_id, &format!("bad log page query: {e}")),
+    };
     if let Some(tok) = w.after {
         match serde_json::from_value::<imbh::PageCursor>(tok) {
             Ok(c) => q = q.after(c),
@@ -1524,10 +1553,11 @@ async fn log_volume_handler(req: Vec<u8>, tx: BatchSender) {
     };
     let step = std::time::Duration::from_nanos(r.step_ns.max(1) as u64);
     let group_refs: Vec<&str> = r.group_by.iter().map(String::as_str).collect();
-    let buckets = match db
-        .logs()
-        .volume_by(build_log_query(r.filter), step, &group_refs)
-        .await
+    let filter = match build_log_query(r.filter) {
+        Ok(q) => q,
+        Err(e) => return store_query_error(query_id, &format!("bad log-volume request: {e}")),
+    };
+    let buckets = match db.logs().volume_by(filter, step, &group_refs).await
     {
         Ok(b) => b,
         Err(e) => return store_query_error(query_id, &e.to_string()),

@@ -16,7 +16,11 @@ import (
 
 // LogEntry is a decoded log record (a curated subset of IMBH's logs columns).
 type LogEntry struct {
-	Time         int64  // event time, unix nanoseconds
+	Time int64 // event time, unix nanoseconds
+	// ObservedTime is when ingest received the record (unix nanoseconds); 0 when the producer sent
+	// none, since the column is nullable. This is the clock LogOrderObservedTime sorts by, so a follow
+	// loop feeds the largest value it has seen back as the next query's LogQuery.ObservedAfter.
+	ObservedTime int64
 	Service      string // service.name (may be "")
 	Severity     uint8  // OTLP severity number
 	SeverityText string
@@ -55,6 +59,7 @@ func decodeLogEntries(rows *Rows) ([]LogEntry, error) {
 		for i := 0; i < n; i++ {
 			out = append(out, LogEntry{
 				Time:         int64At(cols["time"], i),
+				ObservedTime: int64At(cols["observed_time"], i),
 				Service:      stringAt(cols["service"], i),
 				Severity:     uint8(int64At(cols["severity_number"], i)),
 				SeverityText: stringAt(cols["severity_text"], i),

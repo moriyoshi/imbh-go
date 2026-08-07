@@ -89,6 +89,9 @@ type DbOptions struct {
 	// lookback, "reject,recent=N" (default 262144 points). The guard is process-local, best-effort, and
 	// never rejects out-of-order or late points — only an exact (series, timestamp) repeat. Like Flush,
 	// a malformed spec fails the open rather than falling back. (imbh 0.5.0: DbBuilder::duplicates.)
+	// Since imbh 0.6.0 "last_wins" collapses the typed metric reads (QueryMetricsTyped /
+	// QueryMetricInstant) too, not just PromQL; before that they aggregated both points, so a
+	// duplicated gauge averaged the pair and a duplicated sum added it.
 	Duplicates string `json:"duplicates,omitempty"`
 	// PromoteKeys promotes the given attribute keys to dedicated columns. Reserved names (including
 	// "service") are dropped by imbh, and "service.name" needs no promotion: since imbh 0.3.0 both

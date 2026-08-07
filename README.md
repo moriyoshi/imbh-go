@@ -251,6 +251,44 @@ though service is a *resource* attribute lifted into a built-in column rather th
 Requires imbh 0.3.0: earlier versions resolved the key against the record attributes, silently
 collapsing a per-service breakdown into one empty-labelled series with the counts merged.
 
+#### Tailing logs on the arrival clock
+
+Every record carries two instants: `Time` (when the event happened) and `ObservedTime` (when ingest
+received it). A follow loop must watermark on the second. Event time is not monotone in arrival — a
+record can be emitted before one already delivered and still land after it, whether because ingest
+batches or because the line's own timestamp was trusted — so a loop that advances a `Start` bound by
+the newest event time it has seen silently drops those records. Ordering by arrival cannot be
+overtaken that way:
+
+```go
+var watermark int64 // last arrival instant delivered
+for {
+    entries, err := db.QueryLogsTyped(ctx, imbhgo.LogQuery{
+        Service:       "checkout",
+        ObservedAfter: watermark,                 // strict: observed_time > watermark
+        OrderBy:       imbhgo.LogOrderObservedTime,
+        Limit:         500,
+    })
+    if err != nil {
+        return err
+    }
+    for _, e := range entries {
+        handle(e)
+        if e.ObservedTime > watermark {
+            watermark = e.ObservedTime
+        }
+    }
+    time.Sleep(pollInterval)
+}
+```
+
+`ObservedTime` is nullable — an OTLP producer need not send one, and `LogEntry.ObservedTime` is then
+`0`. Such records sort **last** in either direction and never match `ObservedAfter` (SQL `NULL > t` is
+unknown), so a record that cannot be placed against a watermark is left out of the loop rather than
+replayed on every poll. `OrderBy` is orthogonal to `Backward`, which picks the direction along the
+chosen axis; the default is `LogOrderTime`, and an unrecognized value is rejected rather than
+silently falling back. Requires imbh 0.6.0.
+
 ### LGTM query languages (PromQL / LogQL / TraceQL)
 
 IMBH implements the Grafana-stack query languages as explicitly-versioned compatibility profiles, and
@@ -335,7 +373,7 @@ works but through `db.Query(ctx, sql)` rather than a dedicated method.
 | Read-only open (`open_read_only`) | ✅ `OpenReadOnly` | many-reader / single-writer; writes on the handle are rejected |
 | Builder options (memory budget, WAL mode, retention, compression, maintenance, promote) | ✅ `OpenWith(DbOptions)` | host-runtime-`Handle` variants (async ingest, runtime-driven maintenance) deferred |
 | Flush policy (`DbBuilder::flush`, imbh 0.2.0) | ✅ `DbOptions.Flush` | imbh's spec string (`"interval=5s,wal=64MiB"`, or `"manual"`); needs `MaintenanceBackgroundNs` set, since that is what runs the scheduler |
-| Duplicate-timestamp policy (`DbBuilder::duplicates`, imbh 0.5.0) | ✅ `DbOptions.Duplicates` | imbh's spec string: `"error_on_read"` (default, fails the PromQL read), `"last_wins"` (collapse at read), `"reject[,recent=N]"` (drop at ingest → `Receipt.Rejected`, `DbStats.IngestRejected`) |
+| Duplicate-timestamp policy (`DbBuilder::duplicates`, imbh 0.5.0) | ✅ `DbOptions.Duplicates` | imbh's spec string: `"error_on_read"` (default, fails the PromQL read), `"last_wins"` (collapse at read), `"reject[,recent=N]"` (drop at ingest → `Receipt.Rejected`, `DbStats.IngestRejected`). Since imbh 0.6.0 `"last_wins"` also collapses the typed metric reads (`QueryMetricsTyped` / `QueryMetricInstant`), which previously aggregated both points |
 | Ops: `stats`, `compact`, `maintain`, `snapshot`, `segments`, `segment_files`, `durable_through`, `export` (Arrow IPC) | ✅ `Stats` / `Compact` / `Maintain` / `Snapshot` / `Segments` / `SegmentFiles` / `DurableThrough` / `Export` (+`ExportRecords`) | writer-only ops error on a read-only handle |
 
 ### Query surfaces
@@ -353,6 +391,7 @@ works but through `db.Query(ctx, sql)` rather than a dedicated method.
 | Log pagination (`LogPage` cursor) | ✅ `QueryLogPage → LogPage{Entries,Next,Stats}` | opaque resume `Cursor` + per-page `QueryStats` |
 | `logs().volume` / `volume_by` | ✅ `LogVolume` / `LogVolumeBy → []VolumeBucket` | time-bucketed counts, optional `group_by` |
 | `logs().count` | ✅ `CountLogs(ctx, LogQuery) → uint64` | full `count(*)` over the filter; ignores `Limit`/`Backward` |
+| Arrival axis (`observed_after` / `LogOrder`, imbh 0.6.0) | ✅ `LogQuery.ObservedAfter` / `LogQuery.OrderBy` | filter and order on ingest time instead of event time; `LogEntry.ObservedTime` carries it back |
 | `traces().search` (`TraceSummary`) | ✅ `SearchTraces → []TraceSummary` | full attr-predicate set on `TraceQuery` |
 | `metrics().instant` (`Vector`) | ✅ `QueryMetricInstant → []InstantSample` | last sample per series |
 | `metrics().catalog` / `series` / `exemplars` | ✅ `MetricCatalog` / `MetricSeries` / `MetricExemplars` | |
@@ -371,9 +410,9 @@ works but through `db.Query(ctx, sql)` rather than a dedicated method.
 ### Typed-query field coverage
 
 `LogQuery` now covers IMBH's builder broadly: `Service`, `Match`, `AttrEq`, `Start`, `End`, `Limit`,
-`Backward`, plus `TraceID`/`SpanID` correlation, `SeverityAtLeast`, and the richer attribute predicates
-(`AttrExists`, `AttrMatches`, `AttrIn`/`AttrNotIn`, `AttrGt`/`Ge`/`Lt`/`Le`, `AttrRegex`); cursor paging is
-via `QueryLogPage`. `TraceQuery` (trace search) exposes service / name / status / kind / duration bounds /
+`Backward`, plus `TraceID`/`SpanID` correlation, `SeverityAtLeast`, the richer attribute predicates
+(`AttrExists`, `AttrMatches`, `AttrIn`/`AttrNotIn`, `AttrGt`/`Ge`/`Lt`/`Le`, `AttrRegex`), and the arrival
+axis (`ObservedAfter`, `OrderBy`); cursor paging is via `QueryLogPage`. `TraceQuery` (trace search) exposes service / name / status / kind / duration bounds /
 time range / limit and the same attribute-predicate set. `SpanMetricsQuery` and `MetricQuery` cover the
 common fields.
 
