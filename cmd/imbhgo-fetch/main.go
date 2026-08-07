@@ -7,8 +7,8 @@
 //
 // Typical use (no Rust toolchain required):
 //
-//	go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.5.1
-//	eval "$(go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.5.1 -print-env)"
+//	go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.6.0
+//	eval "$(go run github.com/moriyoshi/imbh-go/cmd/imbhgo-fetch@v0.6.0 -print-env)"
 //	go build -tags sable_extern_lib ./...
 //
 // -print-env emits POSIX shell syntax on every platform; pass -shell cmd or -shell powershell to
@@ -68,7 +68,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("imbhgo-fetch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var o options
-	fs.StringVar(&o.version, "version", resolveVersion(), "release version to fetch (e.g. v0.5.1)")
+	fs.StringVar(&o.version, "version", resolveVersion(), "release version to fetch (e.g. v0.6.0)")
 	fs.StringVar(&o.goos, "os", runtime.GOOS, "target GOOS")
 	fs.StringVar(&o.goarch, "arch", runtime.GOARCH, "target GOARCH")
 	fs.StringVar(&o.libc, "libc", "", "Linux C library: glibc or musl (default: auto-detect)")
@@ -92,7 +92,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 }
 
 // resolveVersion prefers the version stamped into the module when this tool is `go run`/installed at
-// a tagged version (…/cmd/imbhgo-fetch@v0.5.1); it falls back to the compiled-in release.Version for
+// a tagged version (…/cmd/imbhgo-fetch@v0.6.0); it falls back to the compiled-in release.Version for
 // local/devel builds where the build info carries no concrete version.
 func resolveVersion() string {
 	if bi, ok := debug.ReadBuildInfo(); ok {
