@@ -867,3 +867,63 @@ stating the same pin, one of them not in the diff you look at when bumping. Fixe
 for the next bump is to grep the version string across the docs rather than editing the block you
 remember. `internal/release.Version` and the `@v0.3.0` examples in `README.md` / `cmd/imbhgo-fetch` are
 *not* that drift — they are the binding's own published-asset tag, deliberately left where they are.
+
+## 2026-08-07 — the `v0.5.0` release failed the version gate, and why the fix is `v0.5.1`, not a retag
+
+**What happened.** The `v0.5.0` tag was pushed at `c635bad` (the 0.5.0 deps merge) and every one of the
+seven build cells failed in ~30s at the same step, "Resolve version" (run 30967137791). The step is the
+guard in `.github/workflows/release.yml` that compares the pushed tag against the compiled-in constant:
+
+```
+::error::tag v0.5.0 != internal/release.Version v0.3.0
+```
+
+The guard was right and did its job. `internal/release.Version` was still `v0.3.0` because the 0.5.0
+deps PR deliberately left it there — the entry above says so explicitly ("*The module release does not
+move here*"), on the reasoning that the binding's published-asset tag is an independent axis moved by an
+explicit `make release` + tag push. That reasoning is sound; what was missing is that the tag push then
+happened anyway, without the `make release` half that was supposed to precede it. The two-step protocol
+was documented and then only half-executed.
+
+**Why the obvious fix is wrong.** The reflex is to bump `Version` to `v0.5.0` and move the tag. That
+does not work here, and the reason is worth writing down because nothing in the repo says it yet:
+
+```
+$ curl -s https://proxy.golang.org/github.com/moriyoshi/imbh-go/@v/v0.5.0.info
+{"Version":"v0.5.0","Time":"2026-08-05T01:40:53Z","Origin":{...,"Hash":"c635badcf1ea6cdaac4484497bbc62742708d525",...}}
+```
+
+`proxy.golang.org` has already cached `v0.5.0` → `c635bad` **immutably**. A moved tag would not change
+what `go get github.com/moriyoshi/imbh-go@v0.5.0` serves — it would keep serving the old tree forever —
+and for anyone resolving outside the proxy the new tree's hash would disagree with the entry
+`sum.golang.org` already holds, which surfaces as a checksum-mismatch security error rather than a
+recoverable failure. Note that this happened even though the release *failed*: the proxy learned the
+version from the tag existing, not from the workflow succeeding. `scripts/bump-version.sh`'s
+`FORCE=1` escape hatch ("only if you intend to retag") is therefore safe only in the window before the
+tag becomes publicly resolvable, which for a pushed tag is minutes at best. Treat a pushed tag as
+permanent.
+
+**What landed.** The bump to `v0.5.1` across the three files `scripts/bump-version.sh` sweeps:
+`internal/release/release.go` (the load-bearing `const Version`, plus three doc-comment examples),
+`cmd/imbhgo-fetch/main.go` (package doc + the `-version` flag help), and `README.md` (the quickstart and
+the two Windows shell-dialect variants). Nothing else changed — no Rust, no glue, no test. `v0.5.1` over
+`v0.6.0` keeps the association with imbh `0.5.0` intact, since the dependency pin is unchanged from
+`c635bad`; the patch digit is carrying a release-plumbing fix, which is exactly what it is for.
+
+The bump was applied by hand rather than via `make release VERSION=v0.5.1`, because the local sandbox
+declined to execute the script; the resulting diff was checked against what the script's sweep specifies.
+
+**Gate.** `gofmt -l` clean, `go build`, `go vet`, `go test -tags sable_extern_lib -race ./...` all green
+(the root suite including the three leak / UAF gates, and `cmd/imbhgo-fetch`). The cargo legs were not
+run and do not apply: `rust/` is untouched by a version bump.
+
+**The debris `v0.5.0` leaves behind.** The tag, an assetless GitHub release, and a proxy-resolvable
+module version all still exist and cannot be withdrawn. `go get ...@v0.5.0` will succeed and then
+`imbhgo-fetch` will 404 on every asset, because the build matrix never produced one. Deleting the empty
+GitHub release does not change that. This is a dead version; the README pointing at `v0.5.1` is the only
+steer available.
+
+**For the next release.** The gate that failed here is the *last* line of defence, and it fires only
+after a tag is pushed — i.e. after the point of no return described above. The cheap fix is for a tag
+push to stop being able to disagree with the tree: have CI check `internal/release.Version` against the
+tag on the *PR*, or have the release workflow read the version from the tag alone. Filed in `TODO.md`.

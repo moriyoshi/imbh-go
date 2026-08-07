@@ -201,6 +201,15 @@ entries, now consolidated into `.agents/docs/LTM/`. Cross-referenced to the LTM 
       `github.event.inputs.version` branch, but the workflow declares only the `push`/`v*` trigger — so that
       branch is dead code and every re-validation costs a tag delete + re-push. Declaring the trigger makes the
       dead branch live and the release path cheap to iterate on. *(2026-07-25 "CD fix round 2" entry)*
+- [ ] **Catch a tag/`Version` disagreement before the tag is pushed.** `release.yml`'s `Resolve version`
+      step compares `GITHUB_REF_NAME` against `internal/release.Version` and fails the build — correct, but it
+      can only fire *after* a tag push, which is already the point of no return: `proxy.golang.org` caches the
+      tag → commit mapping immutably whether or not the release succeeded, so the tag cannot be moved and the
+      version is burned. This is exactly how `v0.5.0` died (run 30967137791; recovered as `v0.5.1`). Two
+      candidate fixes: check the constant against the branch/PR in `ci.yml` so a release PR cannot merge while
+      it disagrees, or drop the constant as a *source* of truth in CI and derive the version from the tag
+      alone, leaving `Version` as the fallback that only `go run`-without-build-info uses. Prefer whichever
+      keeps `imbhgo-fetch`'s `resolveVersion()` behaviour intact. *(2026-08-07 journal entry)*
 - [x] **Pin sable to a `main` commit.** ✅ 2026-07-26 — **closed, and it was two stale items, not one.**
       (a) `545d04f` had been on `main` since sable PR #1 merged 2026-07-24 (`bff774f`); the "on a fix branch,
       not `main`" wording had gone stale and was copied across the docs unchecked. (b) The macOS port
