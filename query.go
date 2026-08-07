@@ -52,7 +52,28 @@ type LogQuery struct {
 	AttrLt          map[string]float64  `json:"attr_lt,omitempty"`           // key → value must be < n
 	AttrLe          map[string]float64  `json:"attr_le,omitempty"`           // key → value must be <= n
 	AttrRegex       map[string]string   `json:"attr_regex,omitempty"`        // key → RE2 pattern the value must match
+
+	// Arrival (observed-time) axis — see LogOrder. Orthogonal to Start/End, which bound event time.
+	ObservedAfter int64    `json:"observed_after,omitempty"` // keep only records with observed_time > t (unix nanos); 0 = unset
+	OrderBy       LogOrder `json:"order_by,omitempty"`       // time axis to ORDER BY; "" = LogOrderTime
 }
+
+// LogOrder selects which of a record's two instants a log query orders by, independently of
+// LogQuery.Backward (which picks the direction along that axis). A record carries both: Time is when
+// the event happened, ObservedTime is when ingest received it. They differ by up to one batch interval
+// always, and by more whenever a record's own timestamp is trusted.
+//
+// LogOrderObservedTime is what a tailer wants. Arrival order is monotone in the order rows became
+// visible, so a watermark over it cannot be overtaken by a late-arriving record with an older event
+// time — which is precisely how a follow loop on the event clock drops lines. Records with no
+// observed_time sort last in either direction, and ObservedAfter never matches them (SQL NULL > t is
+// unknown), so they are left out of a follow loop rather than replayed on every poll.
+type LogOrder string
+
+const (
+	LogOrderTime         LogOrder = "time"          // order by event time (the default)
+	LogOrderObservedTime LogOrder = "observed_time" // order by arrival time, NULLs last
+)
 
 // QueryLogs runs a typed log query, returning a zero-copy streamed result set (see Rows).
 func (db *DB) QueryLogs(ctx context.Context, q LogQuery) (*Rows, error) {

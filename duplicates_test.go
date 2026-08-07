@@ -206,3 +206,58 @@ func TestDuplicatesRejectsBadSpec(t *testing.T) {
 		t.Logf("Duplicates: %q → %v", spec, err)
 	}
 }
+
+// TestDuplicatesLastWinsCollapsesTypedMetricReads is the imbh 0.6.0 half of the policy: `last_wins`
+// collapsed the duplicated instant for PromQL from 0.5.0 on, but the *typed* metric reads
+// (QueryMetricsTyped / QueryMetricInstant) still aggregated both points — so a duplicated gauge
+// averaged the pair and a duplicated sum added it, quietly reporting a number that was never
+// recorded. Both now collapse first, choosing the survivor by imbh's total order on the value
+// (largest first, NaN last) rather than by scan order, so the answer is a pure function of the
+// stored samples and matches what PromQL over the same points reports.
+func TestDuplicatesLastWinsCollapsesTypedMetricReads(t *testing.T) {
+	db, err := OpenWith(DbOptions{Path: t.TempDir(), Duplicates: "last_wins"})
+	if err != nil {
+		t.Fatalf("OpenWith(last_wins): %v", err)
+	}
+	defer db.Close()
+
+	base := int64(1_700_000_000_000_000_000)
+	// Two points, one series, one instant, different values: 0.25 then 0.75. Aggregating both gives
+	// 0.5 (avg) — a value never ingested — where collapsing gives 0.75.
+	for _, v := range []float64{0.25, 0.75} {
+		if _, err := db.IngestOTLPMetrics(dupGaugeRequest(t, "web", "cpu_seconds", v, base)); err != nil {
+			t.Fatalf("IngestOTLPMetrics(%v): %v", v, err)
+		}
+	}
+
+	q := MetricQuery{
+		Metric: "cpu_seconds",
+		Step:   int64(time.Second),
+		Start:  base - int64(time.Minute),
+		End:    base + int64(time.Minute),
+	}
+	m, err := db.QueryMetricsTyped(context.Background(), q)
+	if err != nil {
+		t.Fatalf("QueryMetricsTyped: %v", err)
+	}
+	if len(m.Series) != 1 {
+		t.Fatalf("QueryMetricsTyped: %d series, want 1", len(m.Series))
+	}
+	if n := len(m.Series[0].Points); n != 1 {
+		t.Fatalf("QueryMetricsTyped: %d points, want 1 (the duplicated instant collapses to one)", n)
+	}
+	if got := m.Series[0].Points[0].V; got != 0.75 {
+		t.Errorf("QueryMetricsTyped over a duplicated instant = %v, want 0.75 (0.5 is the pre-0.6.0 average of both)", got)
+	}
+
+	samples, err := db.QueryMetricInstant(context.Background(), q)
+	if err != nil {
+		t.Fatalf("QueryMetricInstant: %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("QueryMetricInstant: %d samples, want 1", len(samples))
+	}
+	if got := samples[0].Value; got != 0.75 {
+		t.Errorf("QueryMetricInstant over a duplicated instant = %v, want 0.75", got)
+	}
+}

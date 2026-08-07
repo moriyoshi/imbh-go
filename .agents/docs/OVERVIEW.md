@@ -14,7 +14,7 @@
 
 One combined `libimbhgo.a` (crate-type `staticlib`) fuses sable's runtime + imbh + the glue + the `imbhgo_*`/`sable_*` C ABI. The Go package is built with `-tags sable_extern_lib` so sable's Go package contributes no `-lsable`; the linker resolves every symbol against `libimbhgo.a`. `make` builds the Rust archive; `make test` builds it and runs `go test -tags sable_extern_lib -race ./...`. `go.mod` pins `toolchain go1.26.4` to match sable (the fused runtime reaches Go's internal ABI via `//go:linkname`).
 
-Dependencies are external, so the binding builds without local checkouts: **imbh** from crates.io with `imbh`/`imbh-core`/`imbh-lgtm` pinned in lockstep at `0.5.0` (the shared version keeps `imbh-core` a single crate instance), and **sable** as a git dep at the `main` commit `0c6fe56` (carrying both the memory-safety fix and the Apple-target port) — Rust via `git`+`rev`, Go via a **direct** `require` (no `replace`, which downstream consumers ignore). Local `../imbh` / `../sable` checkouts remain the co-development path; re-pin when upstream changes land.
+Dependencies are external, so the binding builds without local checkouts: **imbh** from crates.io with `imbh`/`imbh-core`/`imbh-lgtm` pinned in lockstep at `0.6.0` (the shared version keeps `imbh-core` a single crate instance), and **sable** as a git dep at the `main` commit `0c6fe56` (carrying both the memory-safety fix and the Apple-target port) — Rust via `git`+`rev`, Go via a **direct** `require` (no `replace`, which downstream consumers ignore). Local `../imbh` / `../sable` checkouts remain the co-development path; re-pin when upstream changes land.
 
 ## Key design decisions
 

@@ -15,8 +15,20 @@ crate-type = ["staticlib"]
 sable = { git = "https://github.com/moriyoshi/sable", rev = "0c6fe56" }
 # imbh facade with the Arrow C Data Interface (cdata), protobuf query inputs (proto), full-text
 # search (search), and serde (for the opaque PageCursor round-trip). This is the heavy dependency
-# (the DataFusion tree). Consumed from crates.io (published 0.5.0); see also ../../imbh for local dev.
-# 0.5.0 adds the duplicate-timestamp policy (`DbBuilder::duplicates(Duplicates)`, surfaced here as the
+# (the DataFusion tree). Consumed from crates.io (published 0.6.0); see also ../../imbh for local dev.
+# 0.6.0 adds the observed-time (arrival) axis to `LogQuery` — `observed_after(Timestamp)` and
+# `order_by(LogOrder::{Time,ObservedTime})`, surfaced here as the `observed_after` / `order_by` fields of
+# `LogQueryWire` — which is what makes a correct tailer expressible: arrival order is monotone in the
+# order rows became visible, so a watermark over it cannot be overtaken by a late-arriving record whose
+# event time is older. Purely additive (both fields are `#[serde(default)]` and the `SELECT` projection
+# is unchanged, so the Go `LogEntry.ObservedTime` added alongside reads a column that was always there).
+# Its two fixes that reach this binding are engine-side, no glue change: compaction now coerces every
+# batch to the table's canonical schema before `concat_batches` (changing `DbOptions.PromoteKeys`
+# between two seals in one UTC day could panic or *silently* truncate/mislabel promoted columns), and
+# typed metric range/instant no longer inflate `sum`/`count` on duplicate points under `last_wins`.
+# The rest of 0.6.0 is the Docker log driver (VRL remap, propagatedMount) and `/stats` shape, none of
+# which this binding consumes.
+# 0.5.0 added the duplicate-timestamp policy (`DbBuilder::duplicates(Duplicates)`, surfaced here as the
 # `duplicates` spec string in `DbOptionsWire`) for two metric points sharing a series *and* an instant:
 # `error_on_read` (the default, unchanged behavior), `last_wins` (collapse at read), `reject` (drop at
 # ingest, counted into `IngestReceipt::rejected`, which the Go `Receipt.Rejected` already carries). Its
@@ -33,16 +45,16 @@ sable = { git = "https://github.com/moriyoshi/sable", rev = "0c6fe56" }
 # behavior (seal on the `Maintenance` interval and at the budget-derived byte threshold). 0.1.1
 # carried the Windows on-disk fix (imbh#3): fsync_dir is a no-op there, because opening a directory
 # as a File returns ERROR_ACCESS_DENIED and every durable open died at WAL segment creation.
-imbh = { version = "0.5.0", features = ["cdata", "proto", "search", "serde"] }
+imbh = { version = "0.6.0", features = ["cdata", "proto", "search", "serde"] }
 # imbh-core for the shared canonical-JSON encoder (`canonical_json_object`), used to render a
 # metric series' `Attributes` label set as its canonical string. MUST resolve to the SAME version as
-# imbh's own imbh-core dep (0.5.0) so the crate instance (and thus `imbh::Attributes` ==
+# imbh's own imbh-core dep (0.6.0) so the crate instance (and thus `imbh::Attributes` ==
 # `imbh_core::Attributes`) unifies — keep this pin in lockstep with the imbh version above.
-imbh-core = { version = "0.5.0" }
+imbh-core = { version = "0.6.0" }
 # LGTM-stack query languages (PromQL / LogQL / TraceQL) executed against imbh::Db (the `source`
-# feature pulls the execution traits, which depend on the imbh facade). Same 0.5.0 as imbh so its
+# feature pulls the execution traits, which depend on the imbh facade). Same 0.6.0 as imbh so its
 # transitive imbh dep unifies with ours.
-imbh-lgtm = { version = "0.5.0", features = ["source"] }
+imbh-lgtm = { version = "0.6.0", features = ["source"] }
 # StreamExt for driving imbh's SendableRecordBatchStream in the stream handler.
 futures = "0.3"
 # Native (JSON) typed-query decoding: Go marshals the query struct, Rust maps it onto imbh's builders.

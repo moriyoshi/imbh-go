@@ -927,3 +927,100 @@ steer available.
 after a tag is pushed — i.e. after the point of no return described above. The cheap fix is for a tag
 push to stop being able to disagree with the tree: have CI check `internal/release.Version` against the
 tag on the *PR*, or have the release workflow read the version from the tag alone. Filed in `TODO.md`.
+
+## 2026-08-07 — imbh 0.6.0 re-pinned: the arrival clock, and two engine fixes reachable from Go
+
+Followed the upstream `v0.6.0` release (published to crates.io). `imbh`/`imbh-core`/`imbh-lgtm` move
+together to `0.6.0`, keeping the lockstep that makes `imbh-core` a single crate instance. sable is
+unchanged — `0c6fe56` is still upstream `main`'s head, so nothing on the Go side of the pin moved.
+
+**The bump was free; the surface was not.** `cargo build --release` on the three bumped pins compiled
+the existing glue untouched, before a line was written. Unlike 0.5.0, 0.6.0's breaking edges all land in
+crates this binding sits above (the Docker log-driver plugin's `propagatedMount` provisioning and VRL
+remap, and the `/stats` serializer converging on `imbh_head::dto::Stats` with a `null` durable LSN) — we
+consume neither `imbh-server` nor `imbh-head`. What reached us is one additive facade API and two fixes.
+
+- *The arrival axis (`LogQuery::observed_after` + `LogOrder`).* This is the release's one item for us,
+  and it is worth more than its diff. A record carries two clocks and OTel says so; imbh has stored
+  `observed_time` on every log row all along, and the `SELECT` projection already carried it — what was
+  missing was the ability to *filter* and *order* by it. Without that, a follow loop can only watermark
+  on event time, and event time is **not monotone in arrival**: ingest lands a line up to one batch
+  interval after it was emitted, and a trusted in-line timestamp can push the gap arbitrarily wide. So a
+  loop that advances `Start` past the newest event time it has delivered drops any record that was
+  emitted before that mark and arrived after it — silently, permanently, with no diagnostic. Arrival
+  order cannot be overtaken that way, which is the whole argument for the axis.
+- *Duplicate metric points in the **typed** reads.* 0.5.0 gave `last_wins` its read-time collapse for
+  PromQL only; `MetricsApi::range`/`instant` still aggregated both points, so a duplicated gauge came
+  back as the *average* of the pair and a duplicated sum as their sum — numbers never recorded, from an
+  API the binding exposes as `QueryMetricsTyped` / `QueryMetricInstant`. 0.6.0 wraps the scan in a
+  `ROW_NUMBER()` dedup partitioned by the series key, picking the survivor by the same total order on
+  the value (largest first, NaN last) §10.5.1 already specified — so the answer is a pure function of
+  the stored samples rather than of scan order. No glue change; a Go-visible behavior change.
+- *Compaction across a promoted-key change.* `concat_batches` takes columns **positionally**, and
+  compaction handed it the *first* segment's schema, so changing the promote set between two seals in
+  one UTC day could panic, silently truncate the later segments' promoted columns, or silently merge two
+  differently-named columns under the first segment's name — and it wrote the result back. Both knobs
+  that reach this are on our surface (`DbOptions.PromoteKeys`, `Compact()`), which is what makes it
+  worth a binding-level gate rather than a note.
+
+**The one design judgement.** `build_log_query` became **fallible** (`Result<imbh::LogQuery, String>`),
+which rippled to all four handlers that share `LogQueryWire`. The alternative — map an unrecognized
+`order_by` to the default — is the cheaper diff and the wrong answer: a typo'd axis in a follow loop
+would quietly downgrade it to the event clock and reintroduce precisely the dropped-record bug the axis
+exists to fix, with the loop still looking like it worked. Validating in Go instead was rejected for the
+opposite reason: it would put the enum mapping in two places, and the Rust side is where the imbh enum
+actually lives. The error names the rejected axis, and all four surfaces are asserted to reject.
+
+**A test expectation that was wrong, and the doc that said so.** The first cut of the compaction gate
+asserted that after promoting `tenant` between two seals, a `tenant=acme` predicate matches the rows
+sealed *before* the promotion. It returned 0. That is imbh's documented, deliberate behavior, not the
+compaction bug leaking: its `ARCHITECTURE.md` §6.1 says the null-fill "is **not** a back-fill" — a
+promoted column is projected from `attributes` at ingest only, so pre-promotion rows keep a NULL column
+through compaction, and a promoted-key predicate misses them exactly as it did before compaction ran.
+That asymmetry is what makes compaction answer-preserving, and it is sharp: the same key answers
+differently depending on whether it is promoted in the *reopened* database (promoted → dictionary
+column, not promoted → `json_get_str` over the JSON, which sees every row). The test now pins both
+readings per segment order, so the binding notices if either ever changes. The attributes JSON carries
+the value in every case, which is what the row-level assertions check — and is also the mislabeling
+detector, since the pre-0.6.0 silent-merge failure preserved the row count.
+
+**What landed.** Rust: `rust/Cargo.toml` (three pins `0.5.0` → `0.6.0`, comment block extended with what
+0.6.0 buys and what it breaks elsewhere); `rust/Cargo.lock`; `rust/src/lib.rs` (`LogQueryWire`
+`observed_after`/`order_by`, `build_log_query` → `Result`, and its four call sites). Go: `query.go`
+(`LogQuery.ObservedAfter`/`OrderBy`, the `LogOrder` type and its two constants), `results.go`
+(`LogEntry.ObservedTime`, decoded from the always-present projection column), `admin.go` (the
+`Duplicates` doc comment now records that `last_wins` reaches the typed reads too). Tests: new
+`observed_time_test.go` (ordering incl. NULL placement both directions, the strict bound across all four
+wire surfaces, a three-poll tailer delivering a late arrival exactly once while asserting the event-time
+watermark misses it, and the unknown-axis rejection on all four), new `compaction_schema_test.go` (both
+segment orders), `duplicates_test.go` +1 case (typed range/instant collapse). Docs: `README.md`
+(capability rows + a "Tailing logs on the arrival clock" section with the loop), `ARCHITECTURE.md`
+(as-built bullet + pin), `AGENTS.md`, `.agents/docs/OVERVIEW.md`, `.agents/docs/PLAN.md`.
+
+**Gate.** Full standard gate green on linux/amd64: `cargo build --release`, `cargo clippy --release
+-- -D warnings`, `gofmt -l` (clean), `go build`, `go vet`, `go test -tags sable_extern_lib -race ./...`
+including the three leak / UAF gates. Nothing in the existing suite moved — the axis is additive and the
+two fixes are engine-side.
+
+**Following the last entry's lesson.** That entry closed by saying the next bump should grep the version
+string across the docs rather than editing the block you remember. Done: `grep -rn "0\.5\.0"` over
+`*.go`/`*.md`/`*.toml` found all five doc sites plus the two Go comments, and no pin drifted this time.
+The `@v0.3.0` examples in `README.md` / `cmd/imbhgo-fetch` and `internal/release.Version` remain the
+binding's own asset tag and are deliberately untouched.
+
+**Two mechanics worth knowing before writing the next observed-time test.** Both were established
+while building `observed_time_test.go` and are not obvious from the Go surface.
+
+- *The arrival clock is caller-controlled, verbatim.* `imbh-otlp` maps the record's
+  `observed_time_unix_nano` straight through as `nonzero(...)` — no receipt-time substitution, and `0`
+  becomes a stored NULL rather than "now". So an OTLP fixture can set the two clocks *independently*
+  and get a fully deterministic disagreement between event order and arrival order, including the NULL
+  case, with no sleeping and no wall-clock dependence. That is what let the tailer gate assert an exact
+  delivery sequence rather than a timing-tolerant one. A test that instead relied on ingest to stamp
+  arrival would have had neither property.
+- *`decodeLogEntries` is shared with the LogQL line path.* `LogEntry.ObservedTime` was added to the one
+  decoder used by both `QueryLogsTyped` and `QueryLogQLLines`. It is safe by construction rather than by
+  coincidence: `columnsByName` yields a nil `arrow.Array` for a column the projection lacks, and
+  `int64At` returns 0 for a nil column, so a LogQL projection without `observed_time` decodes as the
+  same 0 an absent OTLP `observed_time` produces. Worth keeping in mind if a future field needs to
+  *distinguish* "column absent" from "value NULL" — the current readers deliberately collapse both.

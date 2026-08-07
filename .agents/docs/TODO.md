@@ -35,6 +35,12 @@ upstream entry point and the wiring pattern.
       `AttrExists`, `AttrMatches`, `AttrIn`/`AttrNotIn`, `AttrGt`/`Ge`/`Lt`/`Le`, `AttrRegex` to the Go
       struct + `LogQueryWire` + `build_log_query`. `TestLogQueryTraceCorrelationAndPredicates` covers
       trace-id, severity, and attr-exists filtering. *(imbh: `LogQuery` builder)*
+- [x] **`LogQuery` arrival axis.** ✅ 2026-08-07, with the imbh 0.6.0 re-pin. `ObservedAfter` (strict
+      `observed_time > t`) + `OrderBy` (`LogOrderTime`/`LogOrderObservedTime`) on the Go struct +
+      `LogQueryWire` + `build_log_query`, which became fallible so an unknown axis is rejected on all
+      four surfaces sharing the wire instead of silently defaulting to event time; `LogEntry.ObservedTime`
+      decodes the arrival clock. Makes a correct tailer expressible (event time is not monotone in
+      arrival). `observed_time_test.go`. *(imbh: `LogQuery::observed_after`/`order_by`, `LogOrder`)*
 - [x] **`traces().search` (`TraceSummary`).** ✅ 2026-07-24. `OP_TRACE_SEARCH=21` →
       `SearchTraces(TraceQuery) []TraceSummary`. `TraceQuery` wire covers service/name/status/kind/
       min-max duration/attr_eq/start-end/limit; `TraceSummary`→Arrow mapped binding-side (no upstream
